@@ -627,11 +627,11 @@ func _emit_status(message: String) -> void:
 	print("[Network] " + message)
 
 @rpc("any_peer", "call_remote", "reliable")
-func _rpc_join_hello(config_hash: String, seed: int, presented_token: String) -> void:
+func _rpc_join_hello(config_hash: String, match_seed: int, presented_token: String) -> void:
 	if mode != "host":
 		return
 	var sender := multiplayer.get_remote_sender_id()
-	if config_hash != _config_digest() or seed != int(simulation.config["seed"]):
+	if config_hash != _config_digest() or match_seed != int(simulation.config["seed"]):
 		rpc_id(sender, "_rpc_join_rejected", "Project configuration or match seed differs.")
 		return
 	if match_started:
@@ -691,8 +691,8 @@ func _rpc_join_hello(config_hash: String, seed: int, presented_token: String) ->
 	session_changed.emit()
 
 @rpc("authority", "call_remote", "reliable")
-func _rpc_lobby_config(config_hash: String, seed: int, assigned_team: int, host_token: String) -> void:
-	if config_hash != _config_digest() or seed != int(simulation.config["seed"]) or assigned_team != 1:
+func _rpc_lobby_config(config_hash: String, match_seed: int, assigned_team: int, host_token: String) -> void:
+	if config_hash != _config_digest() or match_seed != int(simulation.config["seed"]) or assigned_team != 1:
 		_emit_status("Host data mismatch. Disconnecting.")
 		disconnect_session()
 		return
@@ -745,13 +745,13 @@ func _rpc_lobby_tactic_update(kind: String, value: String) -> void:
 func _rpc_begin_match(
 	formation: String,
 	config_hash: String,
-	seed: int,
+	match_seed: int,
 	home_mentality: String,
 	home_game_plan: String,
 	away_mentality: String,
 	away_game_plan: String
 ) -> void:
-	if mode != "client" or config_hash != _config_digest() or seed != int(simulation.config["seed"]):
+	if mode != "client" or config_hash != _config_digest() or match_seed != int(simulation.config["seed"]):
 		_mark_desynchronized("host started with incompatible match data")
 		return
 	simulation.config["probability"]["ai"]["enabled"] = false
