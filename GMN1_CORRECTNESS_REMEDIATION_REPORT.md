@@ -69,3 +69,92 @@ No runtime or PVP test is reported as passing. The implemented regression assert
 ## F. Final recommendation
 
 **FAIL — validation incomplete.** Source changes and regression assertions are present, but the existing determinism test and required live PVP/reconnect tests could not run. Do not treat this remediation as verified until those tests pass in Godot.
+
+## G. Kick-off and out-of-bounds restart implementation (baseline `7fa070985c904f85ae076094195e419b7a83ab5d`)
+
+This focused follow-up implements an authoritative restart lifecycle in `scripts/simulation/match_simulation.gd`:
+
+- Initial, halftime, and post-goal kickoffs use a formation-aware taker/receiver selection and deterministic guaranteed pass delivery. Initial kickoff is explicitly team 0; halftime uses the configured team; goals award the next kickoff to the conceding team.
+- Passes track the passer as last touch until reception. Possession changes record the actual receiving/intercepting player. Ball flight tests the complete movement segment against touchline and goal-line boundaries after accounting for ball radius.
+- Touchline exits award a throw-in to the opposite of the last-touch team. Goal-line exits award a corner when the defending team touched last, or a goal kick otherwise. Goalkeeper saves have a configured chance to be deflected for a corner; ordinary saves still resolve through the existing rebound/hold behavior. Existing shot and goal probability formulas were not changed.
+- Pending restarts store kind, team, position, taker/receiver IDs, delay, and last-touch metadata. While pending, player movement and normal actions stop; the match clock continues during the configured pause. Restarts clear stale ball owner/target/velocity and start a pass-like delivery.
+- Restart and last-touch fields (including the boundary crossing point) are authoritative state and snapshot data. Snapshot validation checks enum values, team/player references, pitch/crossing positions, and pending/in-play consistency. Snapshot schema is now 5 and the network code protocol marker is `gmn1-lockstep-3`.
+- Added focused regression assertions to `scripts/tests/determinism_test.gd` for 4-4-2 and single-striker kickoffs, halftime, fast touchline/goal-line crossing, both throw-in ownership directions, corner, goal kick, thrower fallback, goal/miss/save outcomes, dead-ball freezing, duplicate prevention, restart snapshot rejection/round-trip, and repeated state hashes.
+
+### Tunable restart parameters
+
+- `match.initial_kickoff_team_index`
+- `match.halftime_restart_team_index` (existing)
+- `match.goal_reset_seconds` (existing post-goal delay)
+- `match.restarts.delay_seconds`
+- `match.restarts.goal_area_depth`
+- `match.restarts.goal_area_width`
+- `match.restarts.role_preference_distance`
+- `match.restarts.saved_shot_corner_probability`
+- `field.ball_radius` (existing boundary-crossing and legal restart margin)
+- `match.pass_ball_speed` (existing restart delivery speed)
+- `network.snapshot_version`
+
+### Verification and provenance
+
+- Starting checkout: `main` at `7fa070985c904f85ae076094195e419b7a83ab5d`; it was clean before this follow-up.
+- Current follow-up changes are uncommitted and must not be interpreted as pushed. No user changes were discarded.
+- Changed files: `GMN1_CORRECTNESS_REMEDIATION_REPORT.md`, `README.md`, `data/match_config.json`, `scripts/network/network_session.gd`, `scripts/simulation/match_simulation.gd`, and `scripts/tests/determinism_test.gd`.
+- Godot 4.7 recheck: **NOT RUN** — no `godot`, `godot4`, or `godot_console` executable was found on PATH or in the checked common installation locations.
+- Headless Godot import, the deterministic test script, short local match, and live two-process PVP/reconnect testing: **NOT RUN** because the Godot runtime is unavailable.
+- VS Code Problems check: **PASS** — no diagnostics reported for the simulation, determinism-test, or network scripts.
+- JSON parsing: **PASS** — `data/match_config.json` parses; snapshot version is 5, initial kickoff team is 0, and restart delay is 0.6 seconds.
+- `git diff --check`: **PASS**. No GDScript runtime result is claimed.
+- Current branch remains `main` at baseline commit `7fa070985c904f85ae076094195e419b7a83ab5d`; follow-up changes remain uncommitted and unpushed.
+
+## H. Kickoff and Out-of-Bounds Restart Validation
+
+### Provenance and production path
+
+- Validation checkout: branch `main`, `HEAD` `7fa070985c904f85ae076094195e419b7a83ab5d` (`7fa0709 Harden deterministic lockstep and reconnect state`).
+- Before this validation, the worktree already had six modified tracked files: this report, `README.md`, `data/match_config.json`, `scripts/network/network_session.gd`, `scripts/simulation/match_simulation.gd`, and `scripts/tests/determinism_test.gd`. These restart/previous feature edits were preserved.
+- Validation-only changes: corrected the existing determinism test's halftime taker assertion to use the last-touch player after restart IDs are cleared; counted the post-goal kickoff as a delta from the initial kickoff; removed duplicate cleanup that caused a native crash. Also initialized restart helper references and renamed shadowing `owner` parameters to `carrier` in the simulation. Added `scripts/tests/restart_validation_test.gd` and its Godot-generated UID file. The simulation edits address editor diagnostics and do not change runtime behavior.
+- `project.godot` declares Godot 4.7 features. Runtime used: **Godot 4.7.2.stable.official.ed1daf0bf**, `C:\Users\USER\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe`.
+- Lifecycle trace: `_reset_match_state()` calls `_begin_restart()` for the configured kickoff; `start_match()` executes it immediately. `_tick()` decrements pending restart delays and executes the restart before ordinary play. `_advance_ball()` checks each movement segment and routes exits through `_classify_out_of_bounds()`. `_set_possession()` updates last touch on reception. There is no separate `_restart_after_goal()` method in this checkout: `_resolve_shot()` scores, clears old ball references, and calls `_begin_restart()` for the conceding side. `_start_second_half()` switches ends and performs its kickoff. `create_snapshot()`, `validate_snapshot()`, `restore_snapshot()`, and `get_state_hash()` include/validate authoritative restart and last-touch state.
+- Snapshot/config/protocol consistency: **PASS** — `network.snapshot_version` is 5, `NetworkSession.PROTOCOL_VERSION` is `gmn1-lockstep-3`, and the README documents both.
+
+### Primary scenarios
+
+| Scenario | Executed? | Result | Evidence | Remaining issue |
+|---|---|---|---|---|
+| Initial kickoff pass | Yes | **PASS** | Configured team 0; 4-4-2 taker Bennett #9 at centre, receiver Brooks #10 (CF); guaranteed pass started with non-zero velocity and receiver controlled the ball at tick 4. One kickoff award. The 4-3-3 single-striker midfielder fallback also passed. | None found. |
+| Forced throw-in | Yes | **PASS** | Real ball trajectories crossed both touchlines. Top: Northbridge #2 Lewis last touch, Eastvale awarded at crossing `(500,-5)`, restart `(500,5)`, Hill #103 to Turner #108. Bottom: Eastvale #102 Young last touch, Northbridge awarded at `(500,605)`, restart `(500,595)`, Lewis #2 to Ward #8. Each executed once and reached its receiver. | None found. |
+| Forced corner kick | Yes | **PASS** | Both goal lines exercised outside the goal mouth. Left: Northbridge #2 Lewis last touch, Eastvale at `(5,5)`, Baker #111 to Turner #108. Right: Eastvale #102 Young last touch, Northbridge at `(995,595)`, Gray #7 to Ward #8. Each executed once and reached its receiver. | None found. |
+| Forced goal kick | Yes | **PASS** | Both goal lines exercised. Left: Eastvale #102 Young last touch, Northbridge GK Mason #1 at `(60,225)` to Carter #4. Right: Northbridge #2 Lewis last touch, Eastvale GK Parker #101 at `(940,375)` to Scott #105. Each executed once and reached its receiver. | None found. |
+| Post-goal kickoff | Yes | **PASS** | Production shot/scoring path recorded “Northbridge Bennett scores!”; score became 1-0. Eastvale #109 Nelson took the centre kickoff to #108 Turner after 11 restart ticks; receiver controlled the ball at tick 20. Total kickoff awards were exactly the initial kickoff plus this goal restart. | None found. |
+
+### Captured state hashes
+
+The following are final authoritative hashes after the restart delivery reached its receiver. Replays matched the corresponding hash histories at every stepped tick.
+
+| Scenario | Execution / receive tick | Final state hash |
+|---|---:|---|
+| Initial kickoff, 4-4-2 | receive 4 | `38d0aa587eeed760daf5f5dd5c87e99cf914d73b863c583add7412b1fb8bc830` |
+| Top throw-in | execute 8 / receive 40 | `9366a96141d5af95bd54ce26f7d785605bae0a13d6a2061b81c28ba76415dc8d` |
+| Bottom throw-in | execute 8 / receive 40 | `c5bfa0c3dd760417e3097e247fca585496a01dcba232356eedac5995d3641b3f` |
+| Left corner | execute 8 / receive 40 | `69f8c01855ad0fe5a9fbb821cd2b45fdae8dcafe28189df32b1dac460131c18a` |
+| Right corner | execute 8 / receive 40 | `b1155d99cd9e8f3e7c4e8ea2108321785b343df630102083a8668129621a3b8a` |
+| Left goal kick | execute 8 / receive 9 | `b96e087f4970f4198549f3c8378dd13f9b1ff598d4dbdf6f99719ac92187d4af` |
+| Right goal kick | execute 8 / receive 9 | `edc2b148a5f1d4c1a0fb8f4063738c1ce1f331d00a9220f2cecef7c6782ce61c` |
+| Post-goal kickoff | execute after 11 delay ticks / receive 20 | `2bf7b50b2fc510634f2a2acc372a698efe84436cdb934c2d46e058317a7a794c` |
+
+### Regression and execution evidence
+
+- For the kickoff and each boundary/post-goal scenario, the dedicated script replayed identical setup twice and compared ordered events plus a state-hash history at every stepped tick. Boundary cases also verified last-touch player/team, awarded team, legal restart position, taker/receiver identity and eligibility, unchanged score, dead-ball freeze, exactly one award, in-play transition, and completed delivery.
+- Pending throw-in, corner, and goal-kick snapshots were restored into a separate initialized simulation. Hashes matched at restore and throughout restart execution/delivery. A corrupted `restart_awarded_team` was rejected without mutating the receiving snapshot. The warning for this deliberately malformed snapshot is expected.
+- Commands and results (all executed with the Godot console executable above):
+  - `"C:\Users\USER\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --headless --editor --path "C:\Users\USER\Documents\Project\GMN1" --quit` — **exit 0**, 11.53 s.
+  - `"C:\Users\USER\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --headless --path "C:\Users\USER\Documents\Project\GMN1" --script "res://scripts/tests/determinism_test.gd"` — **exit 0**, 5.38 s. Restart contracts, state/snapshot contracts, and deterministic replay passed; 129 key events and 20 state hashes matched.
+  - `"C:\Users\USER\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --headless --path "C:\Users\USER\Documents\Project\GMN1" --script "res://scripts/tests/restart_validation_test.gd"` — **exit 0**, 9.74 s. All eight printed validations passed: initial kickoff, both throw-ins, both corners, both goal kicks, and post-goal kickoff.
+  - `data/match_config.json` parse — **PASS**, snapshot version 5 and initial kickoff team 0.
+  - VS Code Problems diagnostics for the simulation, network, and both test scripts — **PASS**, no errors. `git diff --check` — **PASS**.
+- Production defect found: **none confirmed** in the tested scenarios. The initial failing runs were caused by assertions/cleanup errors in the pre-existing test script, not restart behavior; those test issues were corrected and the full suite then passed.
+- Host/client network validation: **NOT RUN**. The snapshot peer checks are local simulations and are not represented as a real two-process network test.
+- Final worktree: branch `main`, same `HEAD` SHA above, no staged changes, no commit or push. The six pre-existing modified tracked files remain; validation adds the updated test content plus the new `restart_validation_test.gd` and `restart_validation_test.gd.uid`.
+
+**Verdict: CONDITIONAL PASS.** All five primary restart scenarios and deterministic/snapshot checks passed on Godot 4.7.2. Real host/client restart synchronization remains unproven; next step is a two-process Godot host/client test covering at least one boundary restart.

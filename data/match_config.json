@@ -27,6 +27,7 @@
     "pass_arrival_radius": 19.0,
     "player_boundary_margin": 25.0,
     "kickoff_own_half_depth_ratio": 0.5,
+    "initial_kickoff_team_index": 0,
     "box_runs": {
       "trigger_ball_attack_x": 0.55,
       "target_depth_from_goal": 110.0,
@@ -37,6 +38,13 @@
     },
     "shot_cooldown_opposition_ticks": 10,
     "goal_reset_seconds": 1.0,
+    "restarts": {
+      "delay_seconds": 0.6,
+      "goal_area_depth": 55.0,
+      "goal_area_width": 150.0,
+      "role_preference_distance": 80.0,
+      "saved_shot_corner_probability": 0.12
+    },
     "condition_fatigue_per_second": 0.0012,
     "condition_form_change_per_success": 0.015,
     "substitution_limit": 3,
@@ -231,7 +239,7 @@
     "tick_beacon_interval": 15,
     "state_hash_interval_ticks": 30,
     "snapshot_interval_ticks": 300,
-    "snapshot_version": 4,
+    "snapshot_version": 5,
     "maximum_pending_commands": 128,
     "reconnect_enabled": true,
     "reconnect_timeout_seconds": 30.0,
