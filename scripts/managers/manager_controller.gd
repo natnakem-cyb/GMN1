@@ -33,12 +33,15 @@ func cycle_game_plan() -> bool:
 	return set_game_plan(GAME_PLANS[next_index])
 
 func substitute_selected_player() -> bool:
-	return _submit("substitution", "", simulation.selected_player_index)
+	var selected := simulation.get_selected_player(team_index)
+	if selected == null:
+		return false
+	return _submit("substitution", "", selected.id)
 
 func activate_instruction(instruction_id: String) -> bool:
 	return _submit("instruction", instruction_id)
 
-func _submit(kind: String, value: String = "", player_index: int = -1) -> bool:
+func _submit(kind: String, value: String = "", player_id: int = -1) -> bool:
 	if network_session != null:
-		return network_session.submit_command(team_index, kind, value, player_index)
-	return simulation.apply_manager_command(team_index, kind, value, player_index)
+		return network_session.submit_command(team_index, kind, value, player_id)
+	return simulation.apply_manager_command(team_index, kind, value, player_id)

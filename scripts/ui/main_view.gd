@@ -382,7 +382,7 @@ func _show_command_feedback(command_name: String) -> void:
 	if network_session.mode == "offline":
 		status_label.text = "%s changed." % command_name
 	elif network_session.mode == "host":
-		status_label.text = "%s command accepted and scheduled." % command_name
+		status_label.text = "%s command scheduled provisionally; outcome is decided at execution." % command_name
 	else:
 		status_label.text = "%s command sent; waiting for host confirmation." % command_name
 

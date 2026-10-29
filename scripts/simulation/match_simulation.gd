@@ -31,6 +31,7 @@ var half_index := 0
 var ai_reaction_clock := 0.0
 var event_log: Array[String] = []
 var selected_player_index := 0
+var last_snapshot_error := ""
 var last_action := "Ready to kick off"
 var last_probability := 0.0
 var last_formula := "No action resolved"
@@ -67,7 +68,7 @@ func step_tick() -> void:
 	_tick(float(config["match"]["tick_seconds"]))
 
 func get_state_hash() -> String:
-	var hash_state: Variant = _canonicalize_hash_value(_build_state_data(false))
+	var hash_state: Variant = _canonicalize_hash_value(_build_state_data(false, false))
 	return JSON.stringify(hash_state, "", true, true).sha256_text()
 
 func _canonicalize_hash_value(value: Variant) -> Variant:
@@ -88,30 +89,176 @@ func _canonicalize_hash_value(value: Variant) -> Variant:
 func create_snapshot() -> Dictionary:
 	return {
 		"version": int(config["network"]["snapshot_version"]),
-		"state": _build_state_data(true)
+		"state": _build_state_data(true, true)
 	}
 
+func validate_snapshot(snapshot: Variant) -> bool:
+	last_snapshot_error = ""
+	if not snapshot is Dictionary:
+		return _reject_snapshot("root must be a dictionary")
+	if typeof(snapshot.get("version")) != TYPE_INT \
+	or int(snapshot["version"]) != int(config["network"]["snapshot_version"]):
+		return _reject_snapshot("unsupported snapshot version")
+	if not snapshot.get("state") is Dictionary:
+		return _reject_snapshot("state must be a dictionary")
+	var state: Dictionary = snapshot["state"]
+	var required_state_keys: Array[String] = [
+		"tick_count", "elapsed_seconds", "accumulator", "decision_clock", "goal_reset_clock",
+		"next_kickoff_team", "half_index", "ai_reaction_clock", "event_log", "ball_position",
+		"ball_velocity", "ball_owner_id", "ball_target_id", "last_action", "last_probability",
+		"last_formula", "last_shot_on_target_probability", "last_goalkeeper_save_probability",
+		"last_rebound_probability", "preferred_pass_debug", "last_defensive_decision",
+		"last_jockey_log_key", "home_formation", "rng_seed", "rng_state", "active", "finished",
+		"teams"
+	]
+	for key in required_state_keys:
+		if not state.has(key):
+			return _reject_snapshot("state is missing '%s'" % key)
+	if not _is_int_value(state["tick_count"]) or int(state["tick_count"]) < 0:
+		return _reject_snapshot("tick_count is invalid")
+	if not _is_int_value(state["next_kickoff_team"]) or not [0, 1].has(int(state["next_kickoff_team"])):
+		return _reject_snapshot("next_kickoff_team is invalid")
+	if not _is_int_value(state["half_index"]) or not [0, 1].has(int(state["half_index"])):
+		return _reject_snapshot("half_index is invalid")
+	if not _is_int_value(state["rng_seed"]) or not _is_int_value(state["rng_state"]):
+		return _reject_snapshot("RNG state is invalid")
+	for key in [
+		"elapsed_seconds", "accumulator", "decision_clock", "goal_reset_clock",
+		"ai_reaction_clock", "last_probability", "last_shot_on_target_probability",
+		"last_goalkeeper_save_probability", "last_rebound_probability"
+	]:
+		if not _is_finite_number(state[key]):
+			return _reject_snapshot("state field '%s' is not finite numeric data" % key)
+	for key in [
+		"last_action", "last_formula", "preferred_pass_debug", "last_defensive_decision",
+		"last_jockey_log_key", "home_formation"
+	]:
+		if typeof(state[key]) != TYPE_STRING:
+			return _reject_snapshot("state field '%s' must be a string" % key)
+	if typeof(state["active"]) != TYPE_BOOL or typeof(state["finished"]) != TYPE_BOOL \
+	or bool(state["active"]) and bool(state["finished"]):
+		return _reject_snapshot("match phase flags are inconsistent")
+	if not config["formations"].has(str(state["home_formation"])):
+		return _reject_snapshot("home_formation is invalid")
+	if not _is_vector_data(state["ball_position"]) or not _is_vector_data(state["ball_velocity"]):
+		return _reject_snapshot("ball vectors are invalid")
+	if not _is_int_value(state["ball_owner_id"]) or not _is_int_value(state["ball_target_id"]):
+		return _reject_snapshot("ball references are invalid")
+	if not state["event_log"] is Array or state["event_log"].size() > 10000:
+		return _reject_snapshot("event_log is invalid or too large")
+	for event in state["event_log"]:
+		if typeof(event) != TYPE_STRING or str(event).length() > 4096:
+			return _reject_snapshot("event_log contains an invalid entry")
+	var tick_seconds := float(config["match"]["tick_seconds"])
+	var half_duration := float(config["match"]["half_duration_seconds"])
+	var max_ticks := int(float(config["match"]["half_duration_seconds"]) * 2.0 / tick_seconds)
+	if int(state["tick_count"]) > max_ticks or float(state["elapsed_seconds"]) < 0.0 \
+	or float(state["elapsed_seconds"]) > half_duration * 2.0 + tick_seconds:
+		return _reject_snapshot("match clock is outside configured bounds")
+	if absf(float(state["elapsed_seconds"]) - float(state["tick_count"]) * tick_seconds) > 0.001:
+		return _reject_snapshot("tick_count and elapsed_seconds disagree")
+	if float(state["accumulator"]) < 0.0 or float(state["accumulator"]) >= tick_seconds \
+	or float(state["decision_clock"]) < 0.0 \
+	or float(state["goal_reset_clock"]) < -tick_seconds or float(state["ai_reaction_clock"]) < 0.0:
+		return _reject_snapshot("match timer is outside valid bounds")
+	if (float(state["elapsed_seconds"]) >= half_duration) != (int(state["half_index"]) == 1):
+		return _reject_snapshot("half index disagrees with match clock")
+	if not state["teams"] is Array or state["teams"].size() != teams.size():
+		return _reject_snapshot("team count is invalid")
+	var all_player_ids: Dictionary = {}
+	var on_pitch_ids: Dictionary = {}
+	for team_index in range(teams.size()):
+		var team_state: Variant = state["teams"][team_index]
+		if not team_state is Dictionary:
+			return _reject_snapshot("team %d must be a dictionary" % team_index)
+		var team_required_keys: Array[String] = [
+			"formation", "mentality", "game_plan", "instructions", "completed_passes_in_possession",
+			"substitutions_used", "tactical_points", "tactical_point_clock", "instruction_cooldown",
+			"score", "is_home", "attacks_right", "change_cooldown", "players", "bench"
+		]
+		for key in team_required_keys:
+			if not team_state.has(key):
+				return _reject_snapshot("team %d is missing '%s'" % [team_index, key])
+		var expected_team: FootballTeam = teams[team_index]
+		if typeof(team_state["formation"]) != TYPE_STRING \
+		or not config["formations"].has(str(team_state["formation"])):
+			return _reject_snapshot("team %d formation is invalid" % team_index)
+		if typeof(team_state["mentality"]) != TYPE_STRING \
+		or not config["probability"]["tactical_modifiers"]["mentality"].has(str(team_state["mentality"])):
+			return _reject_snapshot("team %d mentality is invalid" % team_index)
+		if typeof(team_state["game_plan"]) != TYPE_STRING \
+		or not config["probability"]["tactical_modifiers"]["game_plan"].has(str(team_state["game_plan"])):
+			return _reject_snapshot("team %d game plan is invalid" % team_index)
+		if typeof(team_state["is_home"]) != TYPE_BOOL or typeof(team_state["attacks_right"]) != TYPE_BOOL:
+			return _reject_snapshot("team %d side flags are invalid" % team_index)
+		var expected_attacks_right := expected_team.is_home if int(state["half_index"]) == 0 else not expected_team.is_home
+		if bool(team_state["is_home"]) != expected_team.is_home \
+		or bool(team_state["attacks_right"]) != expected_attacks_right:
+			return _reject_snapshot("team %d side orientation is inconsistent" % team_index)
+		for key in ["completed_passes_in_possession", "substitutions_used", "score"]:
+			if not _is_int_value(team_state[key]) or int(team_state[key]) < 0:
+				return _reject_snapshot("team %d field '%s' is invalid" % [team_index, key])
+		for key in ["tactical_points", "tactical_point_clock", "instruction_cooldown", "change_cooldown"]:
+			if not _is_finite_number(team_state[key]) or float(team_state[key]) < 0.0:
+				return _reject_snapshot("team %d field '%s' is invalid" % [team_index, key])
+		if int(team_state["substitutions_used"]) > int(config["match"]["substitution_limit"]) \
+		or float(team_state["tactical_points"]) > float(config["match"]["tactical_points_maximum"]) \
+		or float(team_state["tactical_point_clock"]) >= float(config["thresholds"]["tactical_point_regen_interval_seconds"]) \
+		or float(team_state["instruction_cooldown"]) > float(config["match"]["instruction_cooldown_seconds"]) \
+		or float(team_state["change_cooldown"]) > float(config["match"]["tactical_change_cooldown_seconds"]):
+			return _reject_snapshot("team %d resource or cooldown is outside configured bounds" % team_index)
+		if not team_state["instructions"] is Array \
+		or team_state["instructions"].size() > int(config["match"]["instruction_slots"]):
+			return _reject_snapshot("team %d instruction list is invalid" % team_index)
+		var instruction_ids: Dictionary = {}
+		for instruction in team_state["instructions"]:
+			if not instruction is Dictionary or not instruction.has("id") or not instruction.has("remaining") \
+			or typeof(instruction["id"]) != TYPE_STRING or not _is_finite_number(instruction["remaining"]):
+				return _reject_snapshot("team %d has malformed instruction data" % team_index)
+			var instruction_id := str(instruction["id"])
+			if instruction_ids.has(instruction_id) \
+			or not config["probability"]["instructions"].has(instruction_id) \
+			or float(instruction["remaining"]) <= 0.0 \
+			or float(instruction["remaining"]) > float(config["thresholds"]["instruction_duration_seconds"]):
+				return _reject_snapshot("team %d instruction is invalid" % team_index)
+			instruction_ids[instruction_id] = true
+		if not team_state["players"] is Array or team_state["players"].size() != expected_team.players.size() \
+		or not team_state["bench"] is Array or team_state["bench"].size() != expected_team.bench.size():
+			return _reject_snapshot("team %d roster size is invalid" % team_index)
+		var expected_players: Dictionary = {}
+		for player in expected_team.players + expected_team.bench:
+			expected_players[player.id] = player
+		var seen_team_ids: Dictionary = {}
+		for roster_key in ["players", "bench"]:
+			for player_data in team_state[roster_key]:
+				if not _validate_snapshot_player(
+					player_data, expected_players, team_index, roster_key == "players"
+				):
+					return _reject_snapshot("team %d contains invalid player data" % team_index)
+				var player_id := int(player_data["id"])
+				if seen_team_ids.has(player_id) or all_player_ids.has(player_id):
+					return _reject_snapshot("duplicate player id %d" % player_id)
+				seen_team_ids[player_id] = true
+				all_player_ids[player_id] = true
+				if roster_key == "players":
+					on_pitch_ids[player_id] = true
+		if seen_team_ids.size() != expected_players.size():
+			return _reject_snapshot("team %d roster identity set is incomplete" % team_index)
+	var owner_id := int(state["ball_owner_id"])
+	var target_id := int(state["ball_target_id"])
+	if owner_id != -1 and (not on_pitch_ids.has(owner_id) or target_id != -1):
+		return _reject_snapshot("ball owner reference is inconsistent")
+	if target_id != -1 and not on_pitch_ids.has(target_id):
+		return _reject_snapshot("ball target reference is invalid")
+	if int(state["rng_seed"]) != int(config["seed"]):
+		return _reject_snapshot("RNG seed does not match the match configuration")
+	return true
+
 func restore_snapshot(snapshot: Dictionary) -> bool:
-	if int(snapshot.get("version", -1)) != int(config["network"]["snapshot_version"]) \
-	or not snapshot.get("state") is Dictionary:
+	if not validate_snapshot(snapshot):
+		push_warning("Snapshot rejected: " + last_snapshot_error)
 		return false
 	var state: Dictionary = snapshot["state"]
-	if state.get("teams", []).size() != teams.size():
-		return false
-	for team_index in range(teams.size()):
-		var team_state: Dictionary = state["teams"][team_index]
-		if team_state.get("players", []).size() != teams[team_index].players.size():
-			return false
-		if team_state.get("bench", []).size() != teams[team_index].bench.size():
-			return false
-		var existing_ids: Dictionary = {}
-		for player in teams[team_index].players:
-			existing_ids[player.id] = true
-		for player in teams[team_index].bench:
-			existing_ids[player.id] = true
-		for player_data in team_state["players"] + team_state["bench"]:
-			if not existing_ids.has(int(player_data.get("id", -1))):
-				return false
 	for team_index in range(teams.size()):
 		var team: FootballTeam = teams[team_index]
 		var team_state: Dictionary = state["teams"][team_index]
@@ -124,15 +271,11 @@ func restore_snapshot(snapshot: Dictionary) -> bool:
 		var restored_bench: Array[FootballPlayer] = []
 		for player_data in team_state["players"]:
 			var player_id := int(player_data["id"])
-			if not all_players.has(player_id):
-				return false
 			var player: FootballPlayer = all_players[player_id]
 			_restore_player_data(player, player_data)
 			restored_players.append(player)
 		for player_data in team_state["bench"]:
 			var player_id := int(player_data["id"])
-			if not all_players.has(player_id):
-				return false
 			var player: FootballPlayer = all_players[player_id]
 			_restore_player_data(player, player_data)
 			restored_bench.append(player)
@@ -166,7 +309,6 @@ func restore_snapshot(snapshot: Dictionary) -> bool:
 	ball_velocity = _vector_from_array(state["ball_velocity"])
 	ball_owner = _find_player_by_id(int(state["ball_owner_id"]))
 	ball_target = _find_player_by_id(int(state["ball_target_id"]))
-	selected_player_index = int(state["selected_player_index"])
 	last_action = str(state["last_action"])
 	last_probability = float(state["last_probability"])
 	last_formula = str(state["last_formula"])
@@ -184,7 +326,7 @@ func restore_snapshot(snapshot: Dictionary) -> bool:
 	_emit_state()
 	return true
 
-func _build_state_data(include_event_log: bool) -> Dictionary:
+func _build_state_data(include_event_log: bool, include_presentation: bool) -> Dictionary:
 	var team_data: Array[Dictionary] = []
 	for team in teams:
 		var players: Array[Dictionary] = []
@@ -210,8 +352,7 @@ func _build_state_data(include_event_log: bool) -> Dictionary:
 			"players": players,
 			"bench": bench
 		})
-	var serialized_events: Array[String] = event_log.duplicate() if include_event_log else []
-	return {
+	var state_data := {
 		"tick_count": tick_count,
 		"elapsed_seconds": elapsed_seconds,
 		"accumulator": accumulator,
@@ -220,28 +361,32 @@ func _build_state_data(include_event_log: bool) -> Dictionary:
 		"next_kickoff_team": next_kickoff_team,
 		"half_index": half_index,
 		"ai_reaction_clock": ai_reaction_clock,
-		"event_log": serialized_events,
 		"ball_position": _vector_to_array(ball_position),
 		"ball_velocity": _vector_to_array(ball_velocity),
 		"ball_owner_id": _player_id_or_sentinel(ball_owner),
 		"ball_target_id": _player_id_or_sentinel(ball_target),
-		"selected_player_index": selected_player_index,
-		"last_action": last_action,
-		"last_probability": last_probability,
-		"last_formula": last_formula,
-		"last_shot_on_target_probability": last_shot_on_target_probability,
-		"last_goalkeeper_save_probability": last_goalkeeper_save_probability,
-		"last_rebound_probability": last_rebound_probability,
-		"preferred_pass_debug": preferred_pass_debug,
-		"last_defensive_decision": last_defensive_decision,
-		"last_jockey_log_key": last_jockey_log_key,
-		"home_formation": home_formation,
 		"rng_seed": rng.seed,
 		"rng_state": rng.state,
 		"active": active,
 		"finished": finished,
 		"teams": team_data
 	}
+	if include_event_log:
+		state_data["event_log"] = event_log.duplicate()
+	if include_presentation:
+		state_data.merge({
+			"last_action": last_action,
+			"last_probability": last_probability,
+			"last_formula": last_formula,
+			"last_shot_on_target_probability": last_shot_on_target_probability,
+			"last_goalkeeper_save_probability": last_goalkeeper_save_probability,
+			"last_rebound_probability": last_rebound_probability,
+			"preferred_pass_debug": preferred_pass_debug,
+			"last_defensive_decision": last_defensive_decision,
+			"last_jockey_log_key": last_jockey_log_key,
+			"home_formation": home_formation
+		})
+	return state_data
 
 func _player_state_data(player: FootballPlayer) -> Dictionary:
 	return {
@@ -273,22 +418,111 @@ func _restore_player_data(player: FootballPlayer, data: Dictionary) -> void:
 	player.number = int(data["number"])
 	player.role = str(data["role"])
 	player.natural_role = str(data["natural_role"])
-	player.tactical_role = str(data.get("tactical_role", player.role))
+	player.tactical_role = str(data["tactical_role"])
 	player.attributes = data["attributes"].duplicate(true)
 	player.form = float(data["form"])
 	player.fatigue = float(data["fatigue"])
 	player.stamina = float(data["stamina"])
-	player.tackle_cooldown = float(data.get("tackle_cooldown", 0.0))
-	player.shot_cooldown_active = bool(data.get("shot_cooldown_active", false))
-	player.shot_cooldown_opposition_ticks = int(data.get("shot_cooldown_opposition_ticks", 0))
-	player.box_run_active = bool(data.get("box_run_active", false))
-	player.box_run_target = _vector_from_array(data.get("box_run_target", [0.0, 0.0]))
-	player.box_run_suppressed = bool(data.get("box_run_suppressed", false))
-	player.carry_distance = float(data.get("carry_distance", 0.0))
+	player.tackle_cooldown = float(data["tackle_cooldown"])
+	player.shot_cooldown_active = bool(data["shot_cooldown_active"])
+	player.shot_cooldown_opposition_ticks = int(data["shot_cooldown_opposition_ticks"])
+	player.box_run_active = bool(data["box_run_active"])
+	player.box_run_target = _vector_from_array(data["box_run_target"])
+	player.box_run_suppressed = bool(data["box_run_suppressed"])
+	player.carry_distance = float(data["carry_distance"])
 	player.position = _vector_from_array(data["position"])
 	player.tactical_position = _vector_from_array(data["tactical_position"])
 	player.team_index = int(data["team_index"])
 	player.on_pitch = bool(data["on_pitch"])
+
+func _reject_snapshot(reason: String) -> bool:
+	last_snapshot_error = reason
+	return false
+
+func _is_int_value(value: Variant) -> bool:
+	return typeof(value) == TYPE_INT
+
+func _is_finite_number(value: Variant) -> bool:
+	return (typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT) and is_finite(float(value))
+
+func _is_vector_data(value: Variant) -> bool:
+	if not value is Array or value.size() != 2:
+		return false
+	return _is_finite_number(value[0]) and _is_finite_number(value[1]) \
+		and absf(float(value[0])) <= 10000.0 and absf(float(value[1])) <= 10000.0
+
+func _validate_snapshot_player(
+	player_data: Variant,
+	expected_players: Dictionary,
+	team_index: int,
+	should_be_on_pitch: bool
+) -> bool:
+	if not player_data is Dictionary:
+		return false
+	var required_keys: Array[String] = [
+		"id", "player_name", "number", "role", "natural_role", "tactical_role", "attributes",
+		"form", "fatigue", "stamina", "tackle_cooldown", "shot_cooldown_active",
+		"shot_cooldown_opposition_ticks", "box_run_active", "box_run_target",
+		"box_run_suppressed", "carry_distance", "position", "tactical_position",
+		"team_index", "on_pitch"
+	]
+	for key in required_keys:
+		if not player_data.has(key):
+			return false
+	if not _is_int_value(player_data["id"]) or not expected_players.has(int(player_data["id"])):
+		return false
+	var expected_player: FootballPlayer = expected_players[int(player_data["id"])]
+	if typeof(player_data["player_name"]) != TYPE_STRING \
+	or str(player_data["player_name"]) != expected_player.player_name \
+	or not _is_int_value(player_data["number"]) or int(player_data["number"]) != expected_player.number \
+	or typeof(player_data["natural_role"]) != TYPE_STRING \
+	or str(player_data["natural_role"]) != expected_player.natural_role \
+	or not player_data["attributes"] is Dictionary \
+	or player_data["attributes"] != expected_player.attributes \
+	or not _is_int_value(player_data["team_index"]) or int(player_data["team_index"]) != team_index \
+	or typeof(player_data["on_pitch"]) != TYPE_BOOL or bool(player_data["on_pitch"]) != should_be_on_pitch:
+		return false
+	for key in ["role", "tactical_role"]:
+		if typeof(player_data[key]) != TYPE_STRING or not _is_known_role(str(player_data[key])):
+			return false
+	if (str(player_data["role"]) == "GK") != (expected_player.natural_role == "GK"):
+		return false
+	if str(player_data["role"]) == "GK" and str(player_data["tactical_role"]) != "GK":
+		return false
+	for key in [
+		"form", "fatigue", "stamina", "tackle_cooldown", "carry_distance"
+	]:
+		if not _is_finite_number(player_data[key]):
+			return false
+	if float(player_data["form"]) < -1.0 or float(player_data["form"]) > 1.0 \
+	or float(player_data["fatigue"]) < 0.0 or float(player_data["fatigue"]) > 1.0 \
+	or float(player_data["stamina"]) < 0.0 \
+	or float(player_data["stamina"]) > expected_player.get_attribute("stamina") \
+	or float(player_data["tackle_cooldown"]) < 0.0 \
+	or float(player_data["carry_distance"]) < 0.0:
+		return false
+	if typeof(player_data["shot_cooldown_active"]) != TYPE_BOOL \
+	or not _is_int_value(player_data["shot_cooldown_opposition_ticks"]) \
+	or int(player_data["shot_cooldown_opposition_ticks"]) < 0 \
+	or int(player_data["shot_cooldown_opposition_ticks"]) > int(config["match"]["shot_cooldown_opposition_ticks"]) \
+	or typeof(player_data["box_run_active"]) != TYPE_BOOL \
+	or typeof(player_data["box_run_suppressed"]) != TYPE_BOOL:
+		return false
+	return _is_vector_data(player_data["position"]) \
+		and _is_vector_data(player_data["tactical_position"]) \
+		and _is_vector_data(player_data["box_run_target"])
+
+func _is_known_role(role: String) -> bool:
+	for formation_data in config["formations"].values():
+		for slot in formation_data:
+			if str(slot["role"]) == role:
+				return true
+	for team_data in config["teams"]:
+		for roster_key in ["players", "bench"]:
+			for player_data in team_data.get(roster_key, []):
+				if str(player_data["role"]) == role:
+					return true
+	return false
 
 func _vector_to_array(value: Vector2) -> Array[float]:
 	return [value.x, value.y]
@@ -313,7 +547,7 @@ func _find_player_by_id(player_id: int) -> FootballPlayer:
 				return player
 	return null
 
-func validate_manager_command(team_index: int, kind: String, value: String = "", player_index: int = -1) -> bool:
+func validate_manager_command(team_index: int, kind: String, value: String = "", player_id: int = -1) -> bool:
 	if finished or team_index < 0 or team_index >= teams.size() or is_team_ai_controlled(team_index):
 		return false
 	var team: FootballTeam = teams[team_index]
@@ -352,7 +586,8 @@ func validate_manager_command(team_index: int, kind: String, value: String = "",
 				return false
 			if team.tactical_points < float(config["match"]["substitution_tactical_point_cost"]):
 				return false
-			if player_index < 0 or player_index >= team.players.size():
+			var player_index := _player_index_by_id(team, player_id)
+			if player_index < 0:
 				return false
 			var outgoing := team.players[player_index]
 			var bench_index := _best_substitute_index(team, outgoing)
@@ -363,7 +598,9 @@ func validate_manager_command(team_index: int, kind: String, value: String = "",
 		_:
 			return false
 
-func apply_manager_command(team_index: int, kind: String, value: String = "", player_index: int = -1) -> bool:
+func apply_manager_command(team_index: int, kind: String, value: String = "", player_id: int = -1) -> bool:
+	if not validate_manager_command(team_index, kind, value, player_id):
+		return false
 	match kind:
 		"mentality":
 			return change_mentality(value, team_index)
@@ -372,7 +609,7 @@ func apply_manager_command(team_index: int, kind: String, value: String = "", pl
 		"instruction":
 			return activate_instruction(team_index, value)
 		"substitution":
-			return substitute_player(team_index, player_index)
+			return substitute_player(team_index, _player_index_by_id(teams[team_index], player_id))
 		_:
 			push_error("Unknown manager command: " + kind)
 			return false
@@ -573,6 +810,21 @@ func _best_substitute_index(team: FootballTeam, outgoing: FootballPlayer) -> int
 			best_index = index
 			best_score = score
 	return best_index
+
+func _player_index_by_id(team: FootballTeam, player_id: int) -> int:
+	for index in range(team.players.size()):
+		if team.players[index].id == player_id:
+			return index
+	return -1
+
+func has_player_id_in_team(team_index: int, player_id: int) -> bool:
+	if team_index < 0 or team_index >= teams.size():
+		return false
+	var team: FootballTeam = teams[team_index]
+	for player in team.players + team.bench:
+		if player.id == player_id:
+			return true
+	return false
 
 func cycle_selected_player(team_index: int = 0) -> void:
 	if teams.is_empty() or team_index < 0 or team_index >= teams.size():
@@ -803,6 +1055,14 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 	if player.box_run_active and not _box_run_shot_ready(player, team):
 		return
 	var shooter_attack_x := _attack_progress_x(shooter_position.x, team)
+	if player.box_run_active:
+		var run_distance := shooter_position.distance_to(player.box_run_target)
+		var run_status := "run complete" if run_distance <= float(config["match"]["box_runs"]["arrival_radius"]) \
+			else "run waived: already inside/edge"
+		var inside_box := _is_inside_position_shot_box(shooter_position, team, 0.0)
+		print("[Shot] %s box-run shot at real-x=%.1f (inside_box=%s, %s, remaining=%.1fpx)." % [
+			player.player_name, shooter_position.x, str(inside_box), run_status, run_distance
+		])
 	print("[Shot] %s decision at real-x=%.1f (attack %.3f, tactical-target-x=%.1f)." % [
 		player.player_name, shooter_position.x, shooter_attack_x, player.tactical_position.x
 	])
@@ -1263,6 +1523,7 @@ func _choose_receiver(player: FootballPlayer, team: FootballTeam) -> FootballPla
 	var nearest_to_carrier := _nearest_opponent_to_position(player.position, teams[1 - player.team_index])
 	var carrier_pressure := player.position.distance_to(nearest_to_carrier.position) if nearest_to_carrier != null else INF
 	var is_pressured := carrier_pressure <= float(tackle_data["pressure_pass_distance"])
+	var carrier_attack_x := _attack_progress_x(player.position.x, team)
 	for candidate in team.players:
 		if candidate == player:
 			continue
@@ -1308,14 +1569,24 @@ func _choose_receiver(player: FootballPlayer, team: FootballTeam) -> FootballPla
 			score += float(config["decision"]["attacking_role_receiver_bonus"]) if direct_mode else 0.0
 		if team.has_instruction("direct_long_balls"):
 			score += float(config["probability"]["instructions"]["direct_long_balls"]["forward_bonus"]) if forward_progress > 0.0 else 0.0
+		var runner_target_distance := candidate.position.distance_to(candidate.box_run_target)
+		var is_arrived_box_runner := candidate.box_run_active \
+			and carrier_attack_x >= float(pass_data["box_runner_progress_attack_x"]) \
+			and runner_target_distance <= float(pass_data["box_runner_near_target_distance"]) \
+			and _is_inside_position_shot_box(candidate.position, team, 0.0) \
+			and defender_distance >= float(pass_data["box_runner_min_open_distance"])
+		if is_arrived_box_runner:
+			score += float(pass_data["box_runner_bonus"])
 		score += _channel_receiver_bonus(team, candidate)
 		if score > best_score or (is_equal_approx(score, best_score) and best_player != null and candidate.id < best_player.id):
 			best_score = score
 			best_player = candidate
-			preferred_pass_debug = "%s: %s #%d %s | %.0fpx, angle %.2f, %s profile, score %.1f, %s%s" % [
+			var runner_text := " | free box runner +%.0f" % float(pass_data["box_runner_bonus"]) if is_arrived_box_runner else ""
+			preferred_pass_debug = "%s: %s #%d %s | %.0fpx, angle %.2f, %s profile, score %.1f, %s%s%s" % [
 				team.team_name, candidate.player_name, candidate.number, candidate.tactical_role, distance,
 				support_angle_quality, role_profile_name, score, "open %.0fpx" % defender_distance,
-				" | carrier pressure %.0fpx" % carrier_pressure if is_pressured else ""
+				" | carrier pressure %.0fpx" % carrier_pressure if is_pressured else "",
+				runner_text
 			]
 	return best_player
 
@@ -1394,10 +1665,11 @@ func _is_inside_shot_box(player: FootballPlayer, team: FootballTeam, edge_margin
 	return _is_inside_position_shot_box(player.position, team, edge_margin)
 
 func _box_run_shot_ready(player: FootballPlayer, team: FootballTeam) -> bool:
-	var arrival_radius := float(config["match"]["box_runs"]["arrival_radius"])
 	var target_distance := player.position.distance_to(player.box_run_target)
 	var inside_box := _is_inside_position_shot_box(player.position, team, 0.0)
-	if target_distance <= arrival_radius and inside_box:
+	var edge_margin := float(config["decision"]["shot_selection"]["box_edge_margin"])
+	var on_box_edge := _is_inside_position_shot_box(player.position, team, edge_margin)
+	if inside_box or on_box_edge:
 		return true
 	var attack_x := _attack_progress_x(player.position.x, team)
 	_log_shot_declined(player, "box run not reached (%.1fpx from target)" % target_distance, attack_x)

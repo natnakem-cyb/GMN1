@@ -231,7 +231,8 @@
     "tick_beacon_interval": 15,
     "state_hash_interval_ticks": 30,
     "snapshot_interval_ticks": 300,
-    "snapshot_version": 3,
+    "snapshot_version": 4,
+    "maximum_pending_commands": 128,
     "reconnect_enabled": true,
     "reconnect_timeout_seconds": 30.0,
     "ping_interval_seconds": 1.0,
@@ -272,6 +273,10 @@
         "central": {"nearby_multiplier": 1.15, "progression_multiplier": 0.8},
         "attacking": {"nearby_multiplier": 0.85, "progression_multiplier": 1.25}
       },
+      "box_runner_progress_attack_x": 0.75,
+      "box_runner_near_target_distance": 45.0,
+      "box_runner_min_open_distance": 50.0,
+      "box_runner_bonus": 180.0,
       "minimum_build_up_passes_before_shot": 2
     }
   },
