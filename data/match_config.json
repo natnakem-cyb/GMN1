@@ -27,6 +27,15 @@
     "pass_arrival_radius": 19.0,
     "player_boundary_margin": 25.0,
     "kickoff_own_half_depth_ratio": 0.5,
+    "box_runs": {
+      "trigger_ball_attack_x": 0.55,
+      "target_depth_from_goal": 110.0,
+      "wide_lane_blend": 0.75,
+      "y_margin_inside_penalty_area": 24.0,
+      "arrival_radius": 12.0,
+      "progress_log_interval_ticks": 5
+    },
+    "shot_cooldown_opposition_ticks": 10,
     "goal_reset_seconds": 1.0,
     "condition_fatigue_per_second": 0.0012,
     "condition_form_change_per_success": 0.015,
@@ -234,13 +243,13 @@
     "possession_pass_range_factor": 0.6,
     "channel_distance_scale": 0.35,
     "shot_selection": {
-      "box_edge_margin": 18.0,
+      "box_edge_margin": 30.0,
       "inside_box_max_angle_ratio": 0.75,
       "minimum_unmarked_distance": 50.0,
       "direct_outside_min_attack_x": 0.86,
       "direct_outside_max_angle_ratio": 0.55,
       "direct_outside_min_open_distance": 105.0,
-      "patient_outside_min_attack_x": 0.93,
+      "patient_outside_min_attack_x": 0.80,
       "patient_outside_max_angle_ratio": 0.28,
       "patient_outside_min_open_distance": 145.0
     },
@@ -263,9 +272,7 @@
         "central": {"nearby_multiplier": 1.15, "progression_multiplier": 0.8},
         "attacking": {"nearby_multiplier": 0.85, "progression_multiplier": 1.25}
       },
-      "minimum_build_up_passes_before_shot": 2,
-      "clear_chance_attack_x": 0.82,
-      "clear_chance_open_distance": 95.0
+      "minimum_build_up_passes_before_shot": 2
     }
   },
   "thresholds": {

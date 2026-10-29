@@ -41,6 +41,7 @@ var preferred_pass_debug := "No pass target evaluated"
 var last_defensive_decision := "No defensive decision yet"
 var last_jockey_log_key := ""
 var home_formation := "4-3-3"
+var box_run_logged_player_keys: Dictionary = {}
 
 func _ready() -> void:
 	config = _read_json(CONFIG_PATH)
@@ -255,6 +256,11 @@ func _player_state_data(player: FootballPlayer) -> Dictionary:
 		"fatigue": player.fatigue,
 		"stamina": player.stamina,
 		"tackle_cooldown": player.tackle_cooldown,
+		"shot_cooldown_active": player.shot_cooldown_active,
+		"shot_cooldown_opposition_ticks": player.shot_cooldown_opposition_ticks,
+		"box_run_active": player.box_run_active,
+		"box_run_target": _vector_to_array(player.box_run_target),
+		"box_run_suppressed": player.box_run_suppressed,
 		"carry_distance": player.carry_distance,
 		"position": _vector_to_array(player.position),
 		"tactical_position": _vector_to_array(player.tactical_position),
@@ -273,6 +279,11 @@ func _restore_player_data(player: FootballPlayer, data: Dictionary) -> void:
 	player.fatigue = float(data["fatigue"])
 	player.stamina = float(data["stamina"])
 	player.tackle_cooldown = float(data.get("tackle_cooldown", 0.0))
+	player.shot_cooldown_active = bool(data.get("shot_cooldown_active", false))
+	player.shot_cooldown_opposition_ticks = int(data.get("shot_cooldown_opposition_ticks", 0))
+	player.box_run_active = bool(data.get("box_run_active", false))
+	player.box_run_target = _vector_from_array(data.get("box_run_target", [0.0, 0.0]))
+	player.box_run_suppressed = bool(data.get("box_run_suppressed", false))
 	player.carry_distance = float(data.get("carry_distance", 0.0))
 	player.position = _vector_from_array(data["position"])
 	player.tactical_position = _vector_from_array(data["tactical_position"])
@@ -455,12 +466,22 @@ func substitute_player(team_index: int, outgoing_index: int, bench_index: int = 
 	incoming.tactical_role = outgoing.tactical_role
 	incoming.position = outgoing.position
 	incoming.tactical_position = outgoing.tactical_position
+	incoming.shot_cooldown_active = outgoing.shot_cooldown_active
+	incoming.shot_cooldown_opposition_ticks = outgoing.shot_cooldown_opposition_ticks
+	incoming.box_run_active = outgoing.box_run_active
+	incoming.box_run_target = outgoing.box_run_target
+	incoming.box_run_suppressed = outgoing.box_run_suppressed
 	incoming.fatigue = outgoing.fatigue * float(config["match"]["substitution_fatigue_inheritance"])
 	incoming.form = outgoing.form * float(config["match"]["substitution_form_inheritance"])
 	incoming.on_pitch = true
 	incoming.stamina = incoming.get_attribute("stamina") * (1.0 - incoming.fatigue)
 	outgoing.role = outgoing.natural_role
 	outgoing.tactical_role = outgoing.natural_role
+	outgoing.shot_cooldown_active = false
+	outgoing.shot_cooldown_opposition_ticks = 0
+	outgoing.box_run_active = false
+	outgoing.box_run_target = Vector2.ZERO
+	outgoing.box_run_suppressed = false
 	outgoing.on_pitch = false
 	team.players[outgoing_index] = incoming
 	team.bench[bench_index] = outgoing
@@ -580,6 +601,11 @@ func _reset_match_state() -> void:
 		team.attacks_right = team.is_home
 		for player in team.players + team.bench:
 			player.tackle_cooldown = 0.0
+			player.shot_cooldown_active = false
+			player.shot_cooldown_opposition_ticks = 0
+			player.box_run_active = false
+			player.box_run_target = Vector2.ZERO
+			player.box_run_suppressed = false
 			player.carry_distance = 0.0
 	elapsed_seconds = 0.0
 	tick_count = 0
@@ -590,6 +616,7 @@ func _reset_match_state() -> void:
 	half_index = 0
 	ai_reaction_clock = 0.0
 	event_log.clear()
+	box_run_logged_player_keys.clear()
 	ball_velocity = Vector2.ZERO
 	ball_target = null
 	ball_owner = _position_teams_for_kickoff(0)
@@ -610,6 +637,7 @@ func _tick(seconds: float) -> void:
 	elapsed_seconds += seconds
 	decision_clock += seconds
 	ai_reaction_clock += seconds
+	_tick_shot_cooldowns()
 	for team in teams:
 		team.tick_cooldown(seconds)
 		team.tactical_point_clock += seconds
@@ -637,15 +665,18 @@ func _tick(seconds: float) -> void:
 				)
 				if support_rank < int(movement_data["pressure_fast_outlet_count"]):
 					movement_speed *= float(movement_data["pressure_support_speed_multiplier"])
-			player.position = player.position.move_toward(
-				player.tactical_position,
-				movement_speed * seconds
-			)
+			if player != ball_owner or not player.box_run_active:
+				player.position = player.position.move_toward(
+					player.tactical_position,
+					movement_speed * seconds
+				)
 		for player in team.bench:
 			player.tackle_cooldown = maxf(0.0, player.tackle_cooldown - seconds)
 	if ball_owner != null:
 		var attack_direction := 1.0 if teams[ball_owner.team_index].attacks_right else -1.0
-		var carry_target := ball_owner.tactical_position + Vector2(attack_direction * float(config["match"]["carry_advance_distance"]), 0.0)
+		var carry_target := ball_owner.tactical_position
+		if not ball_owner.box_run_active:
+			carry_target += Vector2(attack_direction * float(config["match"]["carry_advance_distance"]), 0.0)
 		var boundary_margin := float(config["match"]["player_boundary_margin"])
 		carry_target.x = clampf(carry_target.x, boundary_margin, float(config["field"]["width"]) - boundary_margin)
 		var previous_position := ball_owner.position
@@ -655,6 +686,11 @@ func _tick(seconds: float) -> void:
 		)
 		ball_owner.carry_distance += maxf(0.0, (ball_owner.position.x - previous_position.x) * attack_direction)
 		ball_position = ball_owner.position
+	for team in teams:
+		for player in team.players:
+			var progress_interval := maxi(1, int(config["match"]["box_runs"]["progress_log_interval_ticks"]))
+			if player.box_run_active and tick_count % progress_interval == 0:
+				_log_box_run_progress(team, player)
 	if goal_reset_clock > 0.0:
 		goal_reset_clock -= seconds
 		if goal_reset_clock <= 0.0:
@@ -760,24 +796,37 @@ func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
 		_set_possession(_nearest_opponent_to_ball(teams[1 - player.team_index]))
 
 func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
+	var shooter_position := player.position
+	if player.shot_cooldown_active:
+		_log_shot_declined(player, "shot cooldown active", _attack_progress_x(shooter_position.x, team))
+		return
+	if player.box_run_active and not _box_run_shot_ready(player, team):
+		return
+	var shooter_attack_x := _attack_progress_x(shooter_position.x, team)
+	print("[Shot] %s decision at real-x=%.1f (attack %.3f, tactical-target-x=%.1f)." % [
+		player.player_name, shooter_position.x, shooter_attack_x, player.tactical_position.x
+	])
+	player.shot_cooldown_active = true
+	player.shot_cooldown_opposition_ticks = 0
+	_clear_box_runs(team, true)
 	_finish_pass_sequence(team, "shot")
 	last_rebound_probability = -1.0
 	var goal_x := float(config["field"]["width"]) if team.attacks_right else 0.0
-	var distance_to_goal := absf(goal_x - player.position.x)
-	var attack_x := player.position.x / float(config["field"]["width"])
+	var distance_to_goal := absf(goal_x - shooter_position.x)
+	var attack_x := shooter_position.x / float(config["field"]["width"])
 	if not team.attacks_right:
 		attack_x = 1.0 - attack_x
-	var nearest_defender := _nearest_opponent_to_position(player.position, teams[1 - player.team_index])
+	var nearest_defender := _nearest_opponent_to_position(shooter_position, teams[1 - player.team_index])
 	if nearest_defender == null:
 		push_error("Shot resolution failed: defending team has no outfield players.")
 		return
-	var pressure_distance := nearest_defender.position.distance_to(player.position)
-	var shot_context := _shot_context_breakdown(player, team, distance_to_goal, attack_x, pressure_distance)
+	var pressure_distance := nearest_defender.position.distance_to(shooter_position)
+	var shot_context := _shot_context_breakdown(shooter_position, team, distance_to_goal, attack_x, pressure_distance)
 	var pressure_factor := float(shot_context["pressure_factor"])
 	var modifier := float(shot_context["total"])
 	var context_description := "%s | shooter x=%.1f (attack %.3f), inside_box=%s" % [
 		_shot_context_description(shot_context),
-		player.position.x,
+		shooter_position.x,
 		attack_x,
 		str(bool(shot_context["inside_box"]))
 	]
@@ -822,7 +871,7 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 	last_goalkeeper_save_probability = save_probability
 	var saved := rng.randf() < save_probability
 	var goal_center_y := float(config["field"]["height"]) * 0.5
-	ball_position = Vector2(goal_x, lerpf(goal_center_y, player.position.y, shot_placement))
+	ball_position = Vector2(goal_x, lerpf(goal_center_y, shooter_position.y, shot_placement))
 	var shot_formula := "%s | %s" % [
 		_formula_description(player, attributes, modifier),
 		context_description
@@ -851,6 +900,9 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 		)
 		if rebound_won and support_player != null:
 			_set_possession(support_player)
+			if support_player != player:
+				player.shot_cooldown_active = false
+				player.shot_cooldown_opposition_ticks = 0
 			_set_last_action("%s shot on target (%.3f); saved by %s (%.3f); rebound to %s (%.3f)" % [
 				player.player_name, shot_probability, goalkeeper.player_name, save_probability,
 				support_player.player_name, rebound_probability
@@ -873,7 +925,7 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 		goal_reset_clock = float(config["match"]["goal_reset_seconds"])
 
 func _shot_context_breakdown(
-	player: FootballPlayer,
+	shooter_position: Vector2,
 	team: FootballTeam,
 	distance_to_goal: float,
 	attack_x: float,
@@ -881,7 +933,7 @@ func _shot_context_breakdown(
 ) -> Dictionary:
 	var probability_data: Dictionary = config["probability"]
 	var field_data: Dictionary = config["field"]
-	var lateral_offset := absf(player.position.y - float(field_data["height"]) * 0.5)
+	var lateral_offset := absf(shooter_position.y - float(field_data["height"]) * 0.5)
 	var angle_ratio := clampf(
 		lateral_offset / maxf(distance_to_goal + float(field_data["goal_width"]) * 0.5, 1.0),
 		0.0,
@@ -894,7 +946,7 @@ func _shot_context_breakdown(
 	var preferred_bonus := 0.0
 	if attack_x >= float(config["thresholds"]["shot_preferred_attack_x"]):
 		preferred_bonus = float(probability_data["preferred_zone_shot_bonus"])
-	var inside_penalty_area := _is_inside_shot_box(player, team, 0.0)
+	var inside_penalty_area := _is_inside_position_shot_box(shooter_position, team, 0.0)
 	var box_bonus := float(probability_data["shot_box_bonus"]) if inside_penalty_area else 0.0
 	var pressure_factor := clampf(
 		1.0 - pressure_distance / float(probability_data["shot_pressure_distance"]),
@@ -1126,6 +1178,27 @@ func _advance_ball(seconds: float) -> void:
 	if ball_position.distance_to(ball_target.position) <= float(config["match"]["pass_arrival_radius"]) or ball_velocity.length() < float(config["match"]["ball_minimum_speed"]):
 		_set_possession(ball_target)
 
+func _tick_shot_cooldowns() -> void:
+	var opposition_ticks_required := int(config["match"]["shot_cooldown_opposition_ticks"])
+	for team in teams:
+		for player in team.players:
+			if not player.shot_cooldown_active:
+				continue
+			var opposition_has_possession := ball_owner != null and ball_target == null \
+				and player.team_index != ball_owner.team_index
+			if not opposition_has_possession:
+				player.shot_cooldown_opposition_ticks = 0
+				continue
+			player.shot_cooldown_opposition_ticks += 1
+			if player.shot_cooldown_opposition_ticks >= opposition_ticks_required:
+				player.shot_cooldown_active = false
+				player.shot_cooldown_opposition_ticks = 0
+				var text := "[Shot] %s cooldown cleared after %d opposition possession ticks." % [
+					player.player_name, opposition_ticks_required
+				]
+				event_log.append(text)
+				print(text)
+
 func _set_possession(player: FootballPlayer) -> void:
 	if player == null:
 		ball_owner = null
@@ -1139,6 +1212,7 @@ func _set_possession(player: FootballPlayer) -> void:
 		previous_team_index = ball_target.team_index
 	if previous_team_index >= 0 and previous_team_index != player.team_index:
 		_finish_pass_sequence(teams[previous_team_index], "possession lost")
+		_clear_box_runs(teams[previous_team_index], false)
 	elif ball_target != null and ball_target.team_index == player.team_index:
 		teams[player.team_index].completed_passes_in_possession += 1
 		var pass_count := teams[player.team_index].completed_passes_in_possession
@@ -1147,6 +1221,7 @@ func _set_possession(player: FootballPlayer) -> void:
 		]
 		event_log.append(sequence_text)
 		print(sequence_text)
+		_clear_team_shot_cooldowns(teams[player.team_index])
 	if ball_owner != player:
 		player.carry_distance = 0.0
 	ball_owner = player
@@ -1163,6 +1238,19 @@ func _finish_pass_sequence(team: FootballTeam, reason: String) -> void:
 		event_log.append(sequence_text)
 		print(sequence_text)
 	team.completed_passes_in_possession = 0
+
+func _clear_team_shot_cooldowns(team: FootballTeam) -> void:
+	for player in team.players:
+		player.shot_cooldown_active = false
+		player.shot_cooldown_opposition_ticks = 0
+
+func _clear_box_runs(team: FootballTeam, suppress_until_possession_change: bool) -> void:
+	for player in team.players:
+		player.box_run_active = false
+		player.box_run_target = Vector2.ZERO
+		player.box_run_suppressed = suppress_until_possession_change
+		if not suppress_until_possession_change:
+			box_run_logged_player_keys.erase("%d:%d" % [player.team_index, player.id])
 
 func _choose_receiver(player: FootballPlayer, team: FootballTeam) -> FootballPlayer:
 	var best_player: FootballPlayer
@@ -1235,6 +1323,9 @@ func _should_shoot(player: FootballPlayer, team: FootballTeam) -> bool:
 	var attack_x := player.position.x / float(config["field"]["width"])
 	if not team.attacks_right:
 		attack_x = 1.0 - attack_x
+	if player.shot_cooldown_active:
+		_log_shot_declined(player, "shot cooldown active", attack_x)
+		return false
 	if not (_is_forward_role(player.tactical_role) or _is_direct_play_mode(team) or team.mentality == "Attacking"):
 		return false
 	var nearest_defender := _nearest_opponent_to_position(player.position, teams[1 - player.team_index])
@@ -1255,6 +1346,8 @@ func _should_shoot(player: FootballPlayer, team: FootballTeam) -> bool:
 	var on_box_edge := not inside_box and _is_inside_shot_box(
 		player, team, float(selection_data["box_edge_margin"])
 	)
+	if player.box_run_active and not _box_run_shot_ready(player, team):
+		return false
 	var nearest_defender_distance := player.position.distance_to(nearest_defender.position)
 	var is_direct_attempt := _is_direct_play_mode(team)
 	if inside_box or on_box_edge:
@@ -1284,25 +1377,53 @@ func _should_shoot(player: FootballPlayer, team: FootballTeam) -> bool:
 	var pass_data: Dictionary = config["decision"]["pass_selection"]
 	if team.game_plan == "Possession" and not team.has_instruction("direct_long_balls"):
 		if team.completed_passes_in_possession < int(pass_data["minimum_build_up_passes_before_shot"]):
-			var clear_chance := inside_box \
-				and attack_x >= float(pass_data["clear_chance_attack_x"]) \
-				and nearest_defender_distance >= float(pass_data["clear_chance_open_distance"])
-			if not clear_chance:
+			var box_line_distance := _distance_to_penalty_area_line(player, team)
+			var open_box_chance := (inside_box or is_zero_approx(box_line_distance)) \
+				and angle_ratio <= float(selection_data["inside_box_max_angle_ratio"]) \
+				and nearest_defender_distance >= float(selection_data["minimum_unmarked_distance"])
+			if open_box_chance:
+				var text := "[Shot] %s: open box chance, build-up waived." % player.player_name
+				event_log.append(text)
+				print(text)
+			else:
 				_log_shot_declined(player, "build-up not finished", attack_x)
 				return false
 	return true
 
 func _is_inside_shot_box(player: FootballPlayer, team: FootballTeam, edge_margin: float) -> bool:
+	return _is_inside_position_shot_box(player.position, team, edge_margin)
+
+func _box_run_shot_ready(player: FootballPlayer, team: FootballTeam) -> bool:
+	var arrival_radius := float(config["match"]["box_runs"]["arrival_radius"])
+	var target_distance := player.position.distance_to(player.box_run_target)
+	var inside_box := _is_inside_position_shot_box(player.position, team, 0.0)
+	if target_distance <= arrival_radius and inside_box:
+		return true
+	var attack_x := _attack_progress_x(player.position.x, team)
+	_log_shot_declined(player, "box run not reached (%.1fpx from target)" % target_distance, attack_x)
+	return false
+
+func _is_inside_position_shot_box(position: Vector2, team: FootballTeam, edge_margin: float) -> bool:
+	var field_data: Dictionary = config["field"]
+	var goal_x := float(field_data["width"]) if team.attacks_right else 0.0
+	var distance_to_goal := absf(goal_x - position.x)
+	var lateral_offset := absf(position.y - float(field_data["height"]) * 0.5)
+	return distance_to_goal <= float(field_data["penalty_area_depth"]) + edge_margin \
+		and lateral_offset <= float(field_data["penalty_area_height"]) * 0.5 + edge_margin
+
+func _distance_to_penalty_area_line(player: FootballPlayer, team: FootballTeam) -> float:
 	var field_data: Dictionary = config["field"]
 	var goal_x := float(field_data["width"]) if team.attacks_right else 0.0
 	var distance_to_goal := absf(goal_x - player.position.x)
 	var lateral_offset := absf(player.position.y - float(field_data["height"]) * 0.5)
-	return distance_to_goal <= float(field_data["penalty_area_depth"]) + edge_margin \
-		and lateral_offset <= float(field_data["penalty_area_height"]) * 0.5 + edge_margin
+	var box_line_x_gap := maxf(distance_to_goal - float(field_data["penalty_area_depth"]), 0.0)
+	var box_line_y_gap := maxf(lateral_offset - float(field_data["penalty_area_height"]) * 0.5, 0.0)
+	return Vector2(box_line_x_gap, box_line_y_gap).length()
 
 func _log_shot_declined(player: FootballPlayer, reason: String, attack_x: float) -> void:
-	var text := "[Shot] %s declines at x=%.1f (attack %.3f): %s." % [
-		player.player_name, player.position.x, attack_x, reason
+	var box_line_distance := _distance_to_penalty_area_line(player, teams[player.team_index])
+	var text := "[Shot] %s declines at x=%.1f (attack %.3f, box-line distance %.1fpx): %s." % [
+		player.player_name, player.position.x, attack_x, box_line_distance, reason
 	]
 	event_log.append(text)
 	print(text)
@@ -1408,12 +1529,27 @@ func _update_tactical_positions(team: FootballTeam) -> void:
 	var tackle_data: Dictionary = config["match"]["tackle_decision"]
 	var carrier_pressure := INF
 	var pressure_support_blend := 0.0
+	var box_run_targets: Dictionary = {}
 	if has_possession and ball_owner != null:
 		var nearest_defender := _nearest_opponent_to_position(ball_owner.position, teams[1 - ball_owner.team_index])
 		if nearest_defender != null:
 			carrier_pressure = ball_owner.position.distance_to(nearest_defender.position)
 			if carrier_pressure <= float(tackle_data["pressure_pass_distance"]):
 				pressure_support_blend = float(tackle_data["pressure_support_blend_bonus"])
+	var run_carrier: FootballPlayer
+	if has_possession:
+		run_carrier = ball_owner
+	elif ball_target != null and ball_target.team_index == team.players[0].team_index:
+		run_carrier = ball_target
+	if run_carrier != null:
+		var ball_attack_x := _attack_progress_x(run_carrier.position.x, team)
+		var run_data: Dictionary = config["match"]["box_runs"]
+		if ball_attack_x >= float(run_data["trigger_ball_attack_x"]):
+			box_run_targets = _get_box_run_targets(team, run_carrier, run_data)
+		else:
+			_clear_box_runs(team, false)
+	else:
+		_clear_box_runs(team, false)
 	var team_advance := float(movement["mentality_advance_x"][team.mentality]) + float(movement["game_plan_advance_x"][team.game_plan])
 	if has_possession:
 		team_advance += float(movement["possession_advance_x"])
@@ -1462,10 +1598,88 @@ func _update_tactical_positions(team: FootballTeam) -> void:
 							0.0, 1.0
 						)
 						target = target.lerp(support_target, support_blend)
+		if box_run_targets.has(player.id):
+			target = box_run_targets[player.id]
+			player.box_run_active = true
+			_log_box_run_once(team, player, target.x)
+		else:
+			player.box_run_active = false
+			player.box_run_target = Vector2.ZERO
 		target.x = clampf(target.x, float(config["field"]["margin"]), float(config["field"]["width"]) - float(config["field"]["margin"]))
 		target.y = clampf(target.y, float(config["field"]["margin"]), float(config["field"]["height"]) - float(config["field"]["margin"]))
 		player.tactical_position = target
+		if player.box_run_active:
+			player.box_run_target = target
 		assigned_players.append(player)
+
+func _attack_progress_x(position_x: float, team: FootballTeam) -> float:
+	var progress := position_x / float(config["field"]["width"])
+	return progress if team.attacks_right else 1.0 - progress
+
+func _get_box_run_targets(team: FootballTeam, owner: FootballPlayer, run_data: Dictionary) -> Dictionary:
+	var strikers: Array[FootballPlayer] = []
+	var wide_attackers: Array[FootballPlayer] = []
+	for player in team.players:
+		if ["ST", "CF"].has(player.tactical_role):
+			strikers.append(player)
+		elif ["LW", "RW", "LM", "RM", "LWB", "RWB", "CAM", "LAM", "RAM"].has(player.tactical_role):
+			wide_attackers.append(player)
+	var runners: Array[FootballPlayer] = []
+	var striker: FootballPlayer
+	for candidate in strikers:
+		if candidate != owner and (striker == null or candidate.position.distance_to(owner.position) < striker.position.distance_to(owner.position)):
+			striker = candidate
+	if striker == null and owner.tactical_role in ["ST", "CF"]:
+		striker = owner
+	if striker != null:
+		runners.append(striker)
+	var wide_runner: FootballPlayer
+	for candidate in wide_attackers:
+		if candidate != owner and (wide_runner == null or candidate.position.distance_to(owner.position) < wide_runner.position.distance_to(owner.position)):
+			wide_runner = candidate
+	if wide_runner != null:
+		runners.append(wide_runner)
+	var field_data: Dictionary = config["field"]
+	var width := float(field_data["width"])
+	var height := float(field_data["height"])
+	var run_depth := float(run_data["target_depth_from_goal"])
+	var run_x := width - run_depth if team.attacks_right else run_depth
+	var center_y := height * 0.5
+	var half_box_height := float(field_data["penalty_area_height"]) * 0.5
+	var y_margin := float(run_data["y_margin_inside_penalty_area"])
+	var targets: Dictionary = {}
+	for runner in runners:
+		if runner.box_run_suppressed:
+			continue
+		var target_y := center_y
+		if runner != striker:
+			target_y = lerpf(center_y, runner.position.y, float(run_data["wide_lane_blend"]))
+		target_y = clampf(target_y, center_y - half_box_height + y_margin, center_y + half_box_height - y_margin)
+		targets[runner.id] = Vector2(run_x, target_y)
+	return targets
+
+func _log_box_run_once(team: FootballTeam, player: FootballPlayer, target_x: float) -> void:
+	var key := "%d:%d" % [player.team_index, player.id]
+	if box_run_logged_player_keys.has(key):
+		return
+	box_run_logged_player_keys[key] = true
+	var attack_sign := 1.0 if team.attacks_right else -1.0
+	var from_x := player.position.x
+	var target_attack_x := _attack_progress_x(target_x, team)
+	var text := "[Run] %s #%d %s box run from-x=%.1f target-attack=%.3f (direction %+.0f)." % [
+		team.team_name, player.number, player.tactical_role, from_x, target_attack_x, attack_sign
+	]
+	event_log.append(text)
+	print(text)
+
+func _log_box_run_progress(team: FootballTeam, player: FootballPlayer) -> void:
+	var remaining_distance := player.position.distance_to(player.box_run_target)
+	var text := "[Run] %s #%d %s current-x=%.1f remaining=%.1fpx target-x=%.1f." % [
+		team.team_name, player.number, player.tactical_role,
+		player.position.x, remaining_distance, player.box_run_target.x
+	]
+	event_log.append(text)
+	print(text)
 
 func _find_formation_player(team: FootballTeam, role: String, assigned: Array[FootballPlayer]) -> FootballPlayer:
 	var fallback_roles := _formation_role_preferences(role)
@@ -1591,6 +1805,9 @@ func _tactical_modifier(team: FootballTeam, action: String) -> float:
 	return float(mentality_modifiers[team.mentality]) + float(plan_modifiers[team.game_plan][action])
 
 func _restart_after_goal() -> void:
+	for team in teams:
+		_clear_team_shot_cooldowns(team)
+		_clear_box_runs(team, false)
 	var kickoff_player := teams[next_kickoff_team].players[9]
 	kickoff_player.position = Vector2(float(config["field"]["width"]) * 0.5, float(config["field"]["height"]) * 0.5)
 	_set_possession(kickoff_player)
