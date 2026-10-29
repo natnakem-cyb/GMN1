@@ -10,6 +10,13 @@ signal substitution_made(team_name: String, outgoing_name: String, incoming_name
 const PlayerScript = preload("res://scripts/data/player.gd")
 const TeamScript = preload("res://scripts/data/team.gd")
 const CONFIG_PATH := "res://data/match_config.json"
+const RESTART_IN_PLAY := "in_play"
+const RESTART_KICKOFF := "kickoff"
+const RESTART_THROW_IN := "throw_in"
+const RESTART_CORNER := "corner_kick"
+const RESTART_GOAL_KICK := "goal_kick"
+const RESTART_FULL_TIME := "full_time"
+const NO_PLAYER_ID := -1
 
 var config: Dictionary
 var teams: Array[FootballTeam] = []
@@ -25,9 +32,18 @@ var tick_count := 0
 var elapsed_seconds := 0.0
 var accumulator := 0.0
 var decision_clock := 0.0
-var goal_reset_clock := 0.0
+var restart_delay_remaining := 0.0
 var next_kickoff_team := 1
 var half_index := 0
+var restart_kind := RESTART_KICKOFF
+var restart_pending := true
+var restart_awarded_team := 0
+var restart_position := Vector2.ZERO
+var restart_crossing_position := Vector2.ZERO
+var restart_taker_id := NO_PLAYER_ID
+var restart_receiver_id := NO_PLAYER_ID
+var last_touch_team_index := -1
+var last_touch_player_id := NO_PLAYER_ID
 var ai_reaction_clock := 0.0
 var event_log: Array[String] = []
 var selected_player_index := 0
@@ -103,12 +119,15 @@ func validate_snapshot(snapshot: Variant) -> bool:
 		return _reject_snapshot("state must be a dictionary")
 	var state: Dictionary = snapshot["state"]
 	var required_state_keys: Array[String] = [
-		"tick_count", "elapsed_seconds", "accumulator", "decision_clock", "goal_reset_clock",
+		"tick_count", "elapsed_seconds", "accumulator", "decision_clock", "restart_delay_remaining",
 		"next_kickoff_team", "half_index", "ai_reaction_clock", "event_log", "ball_position",
 		"ball_velocity", "ball_owner_id", "ball_target_id", "last_action", "last_probability",
 		"last_formula", "last_shot_on_target_probability", "last_goalkeeper_save_probability",
 		"last_rebound_probability", "preferred_pass_debug", "last_defensive_decision",
 		"last_jockey_log_key", "home_formation", "rng_seed", "rng_state", "active", "finished",
+		"restart_kind", "restart_pending", "restart_awarded_team", "restart_position",
+		"restart_crossing_position", "restart_taker_id", "restart_receiver_id",
+		"last_touch_team_index", "last_touch_player_id",
 		"teams"
 	]
 	for key in required_state_keys:
@@ -123,7 +142,7 @@ func validate_snapshot(snapshot: Variant) -> bool:
 	if not _is_int_value(state["rng_seed"]) or not _is_int_value(state["rng_state"]):
 		return _reject_snapshot("RNG state is invalid")
 	for key in [
-		"elapsed_seconds", "accumulator", "decision_clock", "goal_reset_clock",
+		"elapsed_seconds", "accumulator", "decision_clock", "restart_delay_remaining",
 		"ai_reaction_clock", "last_probability", "last_shot_on_target_probability",
 		"last_goalkeeper_save_probability", "last_rebound_probability"
 	]:
@@ -159,7 +178,11 @@ func validate_snapshot(snapshot: Variant) -> bool:
 		return _reject_snapshot("tick_count and elapsed_seconds disagree")
 	if float(state["accumulator"]) < 0.0 or float(state["accumulator"]) >= tick_seconds \
 	or float(state["decision_clock"]) < 0.0 \
-	or float(state["goal_reset_clock"]) < -tick_seconds or float(state["ai_reaction_clock"]) < 0.0:
+	or float(state["restart_delay_remaining"]) < 0.0 \
+	or float(state["restart_delay_remaining"]) > maxf(
+		float(config["match"]["goal_reset_seconds"]), float(config["match"]["restarts"]["delay_seconds"])
+	) + tick_seconds \
+	or float(state["ai_reaction_clock"]) < 0.0:
 		return _reject_snapshot("match timer is outside valid bounds")
 	if (float(state["elapsed_seconds"]) >= half_duration) != (int(state["half_index"]) == 1):
 		return _reject_snapshot("half index disagrees with match clock")
@@ -239,7 +262,7 @@ func validate_snapshot(snapshot: Variant) -> bool:
 				if seen_team_ids.has(player_id) or all_player_ids.has(player_id):
 					return _reject_snapshot("duplicate player id %d" % player_id)
 				seen_team_ids[player_id] = true
-				all_player_ids[player_id] = true
+				all_player_ids[player_id] = team_index
 				if roster_key == "players":
 					on_pitch_ids[player_id] = true
 		if seen_team_ids.size() != expected_players.size():
@@ -250,6 +273,72 @@ func validate_snapshot(snapshot: Variant) -> bool:
 		return _reject_snapshot("ball owner reference is inconsistent")
 	if target_id != -1 and not on_pitch_ids.has(target_id):
 		return _reject_snapshot("ball target reference is invalid")
+	if typeof(state["restart_kind"]) != TYPE_STRING or not [
+		RESTART_IN_PLAY, RESTART_KICKOFF, RESTART_THROW_IN, RESTART_CORNER,
+		RESTART_GOAL_KICK, RESTART_FULL_TIME
+	].has(str(state["restart_kind"])):
+		return _reject_snapshot("restart kind is invalid")
+	if typeof(state["restart_pending"]) != TYPE_BOOL \
+	or not _is_int_value(state["restart_awarded_team"]) \
+	or not _is_int_value(state["restart_taker_id"]) \
+	or not _is_int_value(state["restart_receiver_id"]) \
+	or not _is_int_value(state["last_touch_team_index"]) \
+	or not _is_int_value(state["last_touch_player_id"]) \
+	or not _is_vector_data(state["restart_position"]) \
+	or not _is_vector_data(state["restart_crossing_position"]):
+		return _reject_snapshot("restart or last-touch metadata has an invalid type")
+	var saved_restart_kind := str(state["restart_kind"])
+	if bool(state["restart_pending"]):
+		var awarded_team := int(state["restart_awarded_team"])
+		var taker_id := int(state["restart_taker_id"])
+		var receiver_id := int(state["restart_receiver_id"])
+		if [RESTART_IN_PLAY, RESTART_FULL_TIME].has(saved_restart_kind) \
+		or not [0, 1].has(awarded_team) \
+		or taker_id == receiver_id or not on_pitch_ids.has(taker_id) \
+		or not on_pitch_ids.has(receiver_id) \
+		or all_player_ids[taker_id] != awarded_team or all_player_ids[receiver_id] != awarded_team \
+		or owner_id != NO_PLAYER_ID or target_id != NO_PLAYER_ID \
+		or _vector_from_array(state["ball_position"]).distance_to(
+			_vector_from_array(state["restart_position"])
+		) > 0.01 \
+		or _vector_from_array(state["ball_velocity"]).length() > 0.001:
+			return _reject_snapshot("pending restart references are inconsistent")
+		if saved_restart_kind == RESTART_KICKOFF and awarded_team != int(state["next_kickoff_team"]):
+			return _reject_snapshot("pending kickoff team disagrees with next_kickoff_team")
+		if not Rect2(
+			Vector2.ZERO,
+			Vector2(float(config["field"]["width"]), float(config["field"]["height"]))
+		).has_point(_vector_from_array(state["restart_position"])):
+			return _reject_snapshot("pending restart position is outside the pitch")
+		var radius := float(config["field"]["ball_radius"])
+		var crossing_position := _vector_from_array(state["restart_crossing_position"])
+		if crossing_position.x < -radius \
+		or crossing_position.x > float(config["field"]["width"]) + radius \
+		or crossing_position.y < -radius \
+		or crossing_position.y > float(config["field"]["height"]) + radius:
+			return _reject_snapshot("restart crossing position is outside boundary bounds")
+	elif not [RESTART_IN_PLAY, RESTART_FULL_TIME].has(saved_restart_kind) \
+	or int(state["restart_awarded_team"]) != -1 \
+	or int(state["restart_taker_id"]) != NO_PLAYER_ID \
+	or int(state["restart_receiver_id"]) != NO_PLAYER_ID \
+	or float(state["restart_delay_remaining"]) != 0.0:
+		return _reject_snapshot("inactive restart metadata is inconsistent")
+	if saved_restart_kind == RESTART_FULL_TIME and not bool(state["finished"]):
+		return _reject_snapshot("full-time restart state is not finished")
+	var touch_team := int(state["last_touch_team_index"])
+	var touch_player := int(state["last_touch_player_id"])
+	if touch_team == -1:
+		if touch_player != NO_PLAYER_ID:
+			return _reject_snapshot("last-touch player exists without a team")
+	elif not [0, 1].has(touch_team) or not all_player_ids.has(touch_player) \
+	or int(all_player_ids[touch_player]) != touch_team:
+		return _reject_snapshot("last-touch player does not belong to the recorded team")
+	if target_id != NO_PLAYER_ID and (
+		touch_team < 0 or int(all_player_ids[target_id]) != touch_team
+	):
+		return _reject_snapshot("in-flight ball target and last touch belong to different teams")
+	if bool(state["finished"]) and saved_restart_kind != RESTART_FULL_TIME:
+		return _reject_snapshot("finished match is missing full-time restart state")
 	if int(state["rng_seed"]) != int(config["seed"]):
 		return _reject_snapshot("RNG seed does not match the match configuration")
 	return true
@@ -298,9 +387,18 @@ func restore_snapshot(snapshot: Dictionary) -> bool:
 	elapsed_seconds = float(state["elapsed_seconds"])
 	accumulator = float(state["accumulator"])
 	decision_clock = float(state["decision_clock"])
-	goal_reset_clock = float(state["goal_reset_clock"])
+	restart_delay_remaining = float(state["restart_delay_remaining"])
 	next_kickoff_team = int(state["next_kickoff_team"])
 	half_index = int(state["half_index"])
+	restart_kind = str(state["restart_kind"])
+	restart_pending = bool(state["restart_pending"])
+	restart_awarded_team = int(state["restart_awarded_team"])
+	restart_position = _vector_from_array(state["restart_position"])
+	restart_crossing_position = _vector_from_array(state["restart_crossing_position"])
+	restart_taker_id = int(state["restart_taker_id"])
+	restart_receiver_id = int(state["restart_receiver_id"])
+	last_touch_team_index = int(state["last_touch_team_index"])
+	last_touch_player_id = int(state["last_touch_player_id"])
 	ai_reaction_clock = float(state["ai_reaction_clock"])
 	event_log.clear()
 	for event in state["event_log"]:
@@ -357,9 +455,18 @@ func _build_state_data(include_event_log: bool, include_presentation: bool) -> D
 		"elapsed_seconds": elapsed_seconds,
 		"accumulator": accumulator,
 		"decision_clock": decision_clock,
-		"goal_reset_clock": goal_reset_clock,
+		"restart_delay_remaining": restart_delay_remaining,
 		"next_kickoff_team": next_kickoff_team,
 		"half_index": half_index,
+		"restart_kind": restart_kind,
+		"restart_pending": restart_pending,
+		"restart_awarded_team": restart_awarded_team,
+		"restart_position": _vector_to_array(restart_position),
+		"restart_crossing_position": _vector_to_array(restart_crossing_position),
+		"restart_taker_id": restart_taker_id,
+		"restart_receiver_id": restart_receiver_id,
+		"last_touch_team_index": last_touch_team_index,
+		"last_touch_player_id": last_touch_player_id,
 		"ai_reaction_clock": ai_reaction_clock,
 		"ball_position": _vector_to_array(ball_position),
 		"ball_velocity": _vector_to_array(ball_velocity),
@@ -649,7 +756,8 @@ func start_match() -> void:
 		return
 	active = true
 	finished = false
-	last_action = "Kick-off"
+	if restart_pending:
+		_execute_pending_restart()
 	_emit_state()
 
 func change_mentality(value: String, team_index: int = 0) -> bool:
@@ -726,6 +834,11 @@ func substitute_player(team_index: int, outgoing_index: int, bench_index: int = 
 		ball_owner = incoming
 	if ball_target == outgoing:
 		ball_target = incoming
+	if restart_pending:
+		if restart_taker_id == outgoing.id:
+			restart_taker_id = incoming.id
+		if restart_receiver_id == outgoing.id:
+			restart_receiver_id = incoming.id
 	team.substitutions_used += 1
 	var text := "%s substitutes %s for %s" % [team.team_name, incoming.player_name, outgoing.player_name]
 	event_log.append(text)
@@ -863,15 +976,32 @@ func _reset_match_state() -> void:
 	tick_count = 0
 	accumulator = 0.0
 	decision_clock = 0.0
-	goal_reset_clock = 0.0
-	next_kickoff_team = 1
+	restart_delay_remaining = 0.0
+	next_kickoff_team = int(config["match"]["initial_kickoff_team_index"])
 	half_index = 0
+	restart_kind = RESTART_KICKOFF
+	restart_pending = false
+	restart_awarded_team = -1
+	restart_position = Vector2.ZERO
+	restart_crossing_position = Vector2.ZERO
+	restart_taker_id = NO_PLAYER_ID
+	restart_receiver_id = NO_PLAYER_ID
+	last_touch_team_index = -1
+	last_touch_player_id = NO_PLAYER_ID
 	ai_reaction_clock = 0.0
 	event_log.clear()
 	box_run_logged_player_keys.clear()
 	ball_velocity = Vector2.ZERO
 	ball_target = null
-	ball_owner = _position_teams_for_kickoff(0)
+	ball_owner = null
+	active = false
+	finished = false
+	_begin_restart(
+		RESTART_KICKOFF,
+		next_kickoff_team,
+		Vector2(float(config["field"]["width"]) * 0.5, float(config["field"]["height"]) * 0.5),
+		0.0
+	)
 	selected_player_index = 0
 	last_shot_on_target_probability = -1.0
 	last_goalkeeper_save_probability = -1.0
@@ -881,12 +1011,25 @@ func _reset_match_state() -> void:
 	last_action = "Ready to kick off"
 	last_probability = 0.0
 	last_formula = "No action resolved"
-	active = false
-	finished = false
 	externally_ticked = false
 
 func _tick(seconds: float) -> void:
 	elapsed_seconds += seconds
+	var half_duration := float(config["match"]["half_duration_seconds"])
+	if half_index == 0 and elapsed_seconds >= half_duration:
+		_start_second_half()
+		_emit_state()
+		return
+	if elapsed_seconds >= half_duration * 2.0:
+		_finish_full_time()
+		_emit_state()
+		return
+	if restart_pending:
+		restart_delay_remaining = maxf(0.0, restart_delay_remaining - seconds)
+		if restart_delay_remaining <= 0.0:
+			_execute_pending_restart()
+		_emit_state()
+		return
 	decision_clock += seconds
 	ai_reaction_clock += seconds
 	_tick_shot_cooldowns()
@@ -943,25 +1086,17 @@ func _tick(seconds: float) -> void:
 			var progress_interval := maxi(1, int(config["match"]["box_runs"]["progress_log_interval_ticks"]))
 			if player.box_run_active and tick_count % progress_interval == 0:
 				_log_box_run_progress(team, player)
-	if goal_reset_clock > 0.0:
-		goal_reset_clock -= seconds
-		if goal_reset_clock <= 0.0:
-			_restart_after_goal()
-	else:
-		_advance_ball(seconds)
-		if decision_clock >= float(config["match"]["decision_interval_seconds"]):
-			decision_clock = 0.0
-			_resolve_next_action()
+	_advance_ball(seconds)
+	if decision_clock >= float(config["match"]["decision_interval_seconds"]):
+		decision_clock = 0.0
+		_resolve_next_action()
 	if half_index == 0 and elapsed_seconds >= float(config["match"]["half_duration_seconds"]):
 		_start_second_half()
 	if ai_reaction_clock >= float(config["probability"]["ai"]["reaction_cooldown_seconds"]):
 		ai_reaction_clock = 0.0
 		_update_ai_manager()
 	if elapsed_seconds >= float(config["match"]["half_duration_seconds"]) * 2.0:
-		active = false
-		finished = true
-		last_action = "Full time"
-		match_finished.emit(teams[0].score, teams[1].score)
+		_finish_full_time()
 	_emit_state()
 
 func _start_second_half() -> void:
@@ -969,15 +1104,40 @@ func _start_second_half() -> void:
 	for team in teams:
 		team.attacks_right = not team.attacks_right
 	next_kickoff_team = int(config["match"]["halftime_restart_team_index"])
-	var kickoff_player := _position_teams_for_kickoff(next_kickoff_team)
-	_set_possession(kickoff_player)
+	restart_pending = false
+	_begin_restart(
+		RESTART_KICKOFF,
+		next_kickoff_team,
+		Vector2(float(config["field"]["width"]) * 0.5, float(config["field"]["height"]) * 0.5),
+		0.0
+	)
+	_execute_pending_restart()
 	decision_clock = 0.0
 	event_log.append("HALFTIME: teams switch ends")
 	halftime_started.emit()
 	print("[Match] HALFTIME: teams switch ends")
 
+func _finish_full_time() -> void:
+	if finished:
+		return
+	active = false
+	finished = true
+	restart_kind = RESTART_FULL_TIME
+	restart_pending = false
+	restart_awarded_team = -1
+	restart_taker_id = NO_PLAYER_ID
+	restart_receiver_id = NO_PLAYER_ID
+	restart_delay_remaining = 0.0
+	restart_crossing_position = Vector2.ZERO
+	ball_owner = null
+	ball_target = null
+	ball_velocity = Vector2.ZERO
+	last_action = "Full time"
+	event_log.append("Full time")
+	match_finished.emit(teams[0].score, teams[1].score)
+
 func _update_ai_manager() -> void:
-	if not bool(config["probability"]["ai"]["enabled"]) or teams.size() < 2:
+	if restart_pending or not bool(config["probability"]["ai"]["enabled"]) or teams.size() < 2:
 		return
 	var ai_team: FootballTeam = teams[1]
 	var ai_data: Dictionary = config["probability"]["ai"]
@@ -998,7 +1158,7 @@ func _update_ai_manager() -> void:
 		event_log.append("AI changes game plan to %s" % desired_plan)
 
 func _resolve_next_action() -> void:
-	if goal_reset_clock > 0.0:
+	if restart_pending or finished:
 		return
 	if ball_target != null:
 		return
@@ -1020,6 +1180,8 @@ func _resolve_next_action() -> void:
 		_resolve_pass(ball_owner, owner_team)
 
 func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
+	if restart_pending or finished:
+		return
 	var receiver := _choose_receiver(player, team)
 	if receiver == null:
 		return
@@ -1042,18 +1204,24 @@ func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
 		ball_owner = null
 		ball_target = receiver
 		ball_position = player.position
+		last_touch_team_index = player.team_index
+		last_touch_player_id = player.id
 		var direction := (receiver.position - player.position).normalized()
 		ball_velocity = direction * float(config["match"]["pass_ball_speed"])
 	else:
 		_set_possession(_nearest_opponent_to_ball(teams[1 - player.team_index]))
 
 func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
+	if restart_pending or finished:
+		return
 	var shooter_position := player.position
 	if player.shot_cooldown_active:
 		_log_shot_declined(player, "shot cooldown active", _attack_progress_x(shooter_position.x, team))
 		return
 	if player.box_run_active and not _box_run_shot_ready(player, team):
 		return
+	last_touch_team_index = player.team_index
+	last_touch_player_id = player.id
 	var shooter_attack_x := _attack_progress_x(shooter_position.x, team)
 	if player.box_run_active:
 		var run_distance := shooter_position.distance_to(player.box_run_target)
@@ -1106,7 +1274,10 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 			context_description
 		]
 		_set_last_action("%s %s misses the target (wide)" % [team.team_name, player.player_name], shot_probability, miss_formula)
-		_set_possession(_goalkeeper(teams[1 - player.team_index]))
+		_classify_out_of_bounds(
+			"right_goal_line" if goal_x > float(config["field"]["width"]) * 0.5 else "left_goal_line",
+			Vector2(goal_x, lerpf(float(config["field"]["height"]) * 0.5, shooter_position.y, shot_placement))
+		)
 		return
 	var goalkeeper := _goalkeeper(teams[1 - player.team_index])
 	if goalkeeper == null:
@@ -1140,6 +1311,23 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 		goalkeeper, gk_weights, gk_modifier, float(config["probability"]["goalkeeper_save_slope"])
 	)
 	if saved:
+		last_touch_team_index = goalkeeper.team_index
+		last_touch_player_id = goalkeeper.id
+		var corner_probability := float(config["match"]["restarts"]["saved_shot_corner_probability"])
+		if rng.randf() < corner_probability:
+			var corner_y := 0.0 if shooter_position.y < goal_center_y else float(config["field"]["height"])
+			_set_last_action(
+				"%s shot saved by %s and deflected out for a corner" % [player.player_name, goalkeeper.player_name],
+				shot_probability,
+				"%s | GK: %s | saved-shot corner probability %.3f" % [
+					shot_formula, keeper_formula, corner_probability
+				]
+			)
+			_classify_out_of_bounds(
+				"right_goal_line" if goal_x > float(config["field"]["width"]) * 0.5 else "left_goal_line",
+				Vector2(goal_x, corner_y)
+			)
+			return
 		var support_player := _nearest_outfield_player_to_position(ball_position, team)
 		var support_modifier := float(config["probability"]["rebound_base_modifier"]) + float(config["probability"]["rebound_save_modifier"])
 		if support_player != null and support_player.position.distance_to(ball_position) <= float(config["probability"]["rebound_support_distance"]):
@@ -1182,7 +1370,12 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 		ball_velocity = Vector2.ZERO
 		ball_owner = null
 		ball_target = null
-		goal_reset_clock = float(config["match"]["goal_reset_seconds"])
+		_begin_restart(
+			RESTART_KICKOFF,
+			next_kickoff_team,
+			Vector2(float(config["field"]["width"]) * 0.5, float(config["field"]["height"]) * 0.5),
+			float(config["match"]["goal_reset_seconds"])
+		)
 
 func _shot_context_breakdown(
 	shooter_position: Vector2,
@@ -1239,6 +1432,8 @@ func _shot_context_description(context: Dictionary) -> String:
 	]
 
 func _resolve_tackle(defender: FootballPlayer) -> bool:
+	if restart_pending or finished:
+		return false
 	if ball_owner == null:
 		return false
 	var decision := _tackle_decision(defender, ball_owner)
@@ -1428,13 +1623,18 @@ func _formula_description_with_slope(player: FootballPlayer, weights: Dictionary
 	]
 
 func _advance_ball(seconds: float) -> void:
-	if ball_target == null:
+	if restart_pending or ball_target == null:
 		return
+	var previous_position := ball_position
 	var drag := maxf(0.0, 1.0 - float(config["match"]["ball_drag_per_second"]) * seconds)
 	var spin := float(config["match"]["ball_spin_influence"])
 	ball_velocity += Vector2(-ball_velocity.y, ball_velocity.x) * spin * seconds
 	ball_velocity *= drag
 	ball_position += ball_velocity * seconds
+	var crossing := _find_boundary_crossing(previous_position, ball_position)
+	if not crossing.is_empty():
+		_classify_out_of_bounds(str(crossing["boundary"]), crossing["position"])
+		return
 	if ball_position.distance_to(ball_target.position) <= float(config["match"]["pass_arrival_radius"]) or ball_velocity.length() < float(config["match"]["ball_minimum_speed"]):
 		_set_possession(ball_target)
 
@@ -1460,6 +1660,8 @@ func _tick_shot_cooldowns() -> void:
 				print(text)
 
 func _set_possession(player: FootballPlayer) -> void:
+	if restart_pending:
+		return
 	if player == null:
 		ball_owner = null
 		ball_target = null
@@ -1488,6 +1690,8 @@ func _set_possession(player: FootballPlayer) -> void:
 	ball_target = null
 	ball_velocity = Vector2.ZERO
 	ball_position = player.position
+	last_touch_team_index = player.team_index
+	last_touch_player_id = player.id
 	preferred_pass_debug = "%s possession: waiting for pass selection" % teams[player.team_index].team_name
 
 func _finish_pass_sequence(team: FootballTeam, reason: String) -> void:
@@ -1513,7 +1717,7 @@ func _clear_box_runs(team: FootballTeam, suppress_until_possession_change: bool)
 			box_run_logged_player_keys.erase("%d:%d" % [player.team_index, player.id])
 
 func _choose_receiver(player: FootballPlayer, team: FootballTeam) -> FootballPlayer:
-	var best_player: FootballPlayer
+	var best_player: FootballPlayer = null
 	var best_score := -INF
 	var attack_direction := 1.0 if team.attacks_right else -1.0
 	var field_width := float(config["field"]["width"])
@@ -1888,7 +2092,7 @@ func _attack_progress_x(position_x: float, team: FootballTeam) -> float:
 	var progress := position_x / float(config["field"]["width"])
 	return progress if team.attacks_right else 1.0 - progress
 
-func _get_box_run_targets(team: FootballTeam, owner: FootballPlayer, run_data: Dictionary) -> Dictionary:
+func _get_box_run_targets(team: FootballTeam, carrier: FootballPlayer, run_data: Dictionary) -> Dictionary:
 	var strikers: Array[FootballPlayer] = []
 	var wide_attackers: Array[FootballPlayer] = []
 	for player in team.players:
@@ -1897,17 +2101,17 @@ func _get_box_run_targets(team: FootballTeam, owner: FootballPlayer, run_data: D
 		elif ["LW", "RW", "LM", "RM", "LWB", "RWB", "CAM", "LAM", "RAM"].has(player.tactical_role):
 			wide_attackers.append(player)
 	var runners: Array[FootballPlayer] = []
-	var striker: FootballPlayer
+	var striker: FootballPlayer = null
 	for candidate in strikers:
-		if candidate != owner and (striker == null or candidate.position.distance_to(owner.position) < striker.position.distance_to(owner.position)):
+		if candidate != carrier and (striker == null or candidate.position.distance_to(carrier.position) < striker.position.distance_to(carrier.position)):
 			striker = candidate
-	if striker == null and owner.tactical_role in ["ST", "CF"]:
-		striker = owner
+	if striker == null and carrier.tactical_role in ["ST", "CF"]:
+		striker = carrier
 	if striker != null:
 		runners.append(striker)
-	var wide_runner: FootballPlayer
+	var wide_runner: FootballPlayer = null
 	for candidate in wide_attackers:
-		if candidate != owner and (wide_runner == null or candidate.position.distance_to(owner.position) < wide_runner.position.distance_to(owner.position)):
+		if candidate != carrier and (wide_runner == null or candidate.position.distance_to(carrier.position) < wide_runner.position.distance_to(carrier.position)):
 			wide_runner = candidate
 	if wide_runner != null:
 		runners.append(wide_runner)
@@ -1989,26 +2193,26 @@ func _formation_role_preferences(role: String) -> Array[String]:
 			return [role, "ATT", "ST", "CF", "LW", "RW", "CM", "MID"]
 	return [role, "MID", "CM", "DEF", "ATT"]
 
-func _support_rank(player: FootballPlayer, owner: FootballPlayer, team: FootballTeam, radius: float) -> int:
+func _support_rank(player: FootballPlayer, carrier: FootballPlayer, team: FootballTeam, radius: float) -> int:
 	var tackle_data: Dictionary = config["match"]["tackle_decision"]
-	var nearest_defender := _nearest_opponent_to_position(owner.position, teams[1 - owner.team_index])
+	var nearest_defender := _nearest_opponent_to_position(carrier.position, teams[1 - carrier.team_index])
 	var prioritize_pressure := nearest_defender != null \
-		and nearest_defender.position.distance_to(owner.position) <= float(tackle_data["pressure_pass_distance"])
-	var player_score := _support_candidate_score(player, owner, radius, tackle_data, prioritize_pressure)
+		and nearest_defender.position.distance_to(carrier.position) <= float(tackle_data["pressure_pass_distance"])
+	var player_score := _support_candidate_score(player, carrier, radius, tackle_data, prioritize_pressure)
 	var rank := 0
 	for teammate in team.players:
-		if teammate == owner or teammate == player or teammate.tactical_role == "GK":
+		if teammate == carrier or teammate == player or teammate.tactical_role == "GK":
 			continue
-		var teammate_distance := teammate.position.distance_to(owner.position)
+		var teammate_distance := teammate.position.distance_to(carrier.position)
 		if teammate_distance > radius:
 			continue
-		var teammate_score := _support_candidate_score(teammate, owner, radius, tackle_data, prioritize_pressure)
+		var teammate_score := _support_candidate_score(teammate, carrier, radius, tackle_data, prioritize_pressure)
 		if teammate_score < player_score or (is_equal_approx(teammate_score, player_score) and teammate.id < player.id):
 			rank += 1
 	return rank
 
-func _support_candidate_score(player: FootballPlayer, owner: FootballPlayer, radius: float, decision_data: Dictionary, prioritize_pressure: bool) -> float:
-	var distance_ratio := player.position.distance_to(owner.position) / maxf(radius, 1.0)
+func _support_candidate_score(player: FootballPlayer, carrier: FootballPlayer, radius: float, decision_data: Dictionary, prioritize_pressure: bool) -> float:
+	var distance_ratio := player.position.distance_to(carrier.position) / maxf(radius, 1.0)
 	var nearest_defender := _nearest_opponent_to_position(player.position, teams[1 - player.team_index])
 	var defender_distance := player.position.distance_to(nearest_defender.position) if nearest_defender != null else radius
 	var openness_ratio := clampf(defender_distance / float(decision_data["pressure_pass_distance"]), 0.0, 1.0)
@@ -2050,40 +2254,344 @@ func _position_teams_for_kickoff(kickoff_team_index: int) -> FootballPlayer:
 			player.position = position
 			player.tactical_position = position
 			assigned_players.append(player)
-	var kickoff_team: FootballTeam = teams[kickoff_team_index]
-	var kickoff_player: FootballPlayer
-	for player in kickoff_team.players:
-		if player.tactical_role == "ST":
-			kickoff_player = player
-			break
-	if kickoff_player == null:
-		for player in kickoff_team.players:
-			if player.tactical_role == "CF":
-				kickoff_player = player
-				break
-	if kickoff_player == null:
-		push_error("Kick-off formation %s has no striker or centre-forward slot." % kickoff_team.formation)
-		return null
 	var center_position := Vector2(width * 0.5, height * 0.5)
+	var kickoff_team: FootballTeam = teams[kickoff_team_index]
+	var kickoff_player := _choose_ranked_restart_player(
+		kickoff_team, ["ST", "CF"], center_position, true
+	)
+	if kickoff_player == null:
+		kickoff_player = _choose_ranked_restart_player(
+			kickoff_team, ["CM", "LCM", "RCM", "CDM", "CAM"], center_position, true
+		)
+	if kickoff_player == null:
+		kickoff_player = _choose_ranked_restart_player(kickoff_team, [], center_position, false)
+	if kickoff_player == null:
+		push_error("Kick-off formation %s has no eligible on-pitch taker." % kickoff_team.formation)
+		return null
 	kickoff_player.position = center_position
 	kickoff_player.tactical_position = center_position
 	ball_position = center_position
 	return kickoff_player
+
+func _begin_restart(
+	kind: String,
+	awarded_team_index: int,
+	position: Vector2,
+	delay_seconds: float,
+	crossing_position: Vector2 = Vector2.ZERO
+) -> bool:
+	if finished or restart_pending:
+		return false
+	if not [RESTART_KICKOFF, RESTART_THROW_IN, RESTART_CORNER, RESTART_GOAL_KICK].has(kind) \
+	or awarded_team_index < 0 or awarded_team_index >= teams.size():
+		push_error("Cannot begin invalid restart: %s for team %d." % [kind, awarded_team_index])
+		return false
+	if kind == RESTART_KICKOFF:
+		next_kickoff_team = awarded_team_index
+	var legal_position := _legal_restart_position(position)
+	var taker: FootballPlayer
+	if kind == RESTART_KICKOFF:
+		taker = _position_teams_for_kickoff(awarded_team_index)
+	else:
+		taker = _choose_restart_taker(kind, teams[awarded_team_index], legal_position)
+	if taker == null:
+		push_error("Cannot begin %s: no eligible taker for %s." % [kind, teams[awarded_team_index].team_name])
+		return false
+	taker.position = legal_position
+	taker.tactical_position = legal_position
+	var receiver := _choose_restart_receiver(kind, teams[awarded_team_index], taker, legal_position)
+	if receiver == null or receiver == taker or receiver.team_index != awarded_team_index or not receiver.on_pitch:
+		push_error("Cannot begin %s: no valid receiver for %s." % [kind, teams[awarded_team_index].team_name])
+		return false
+	for team in teams:
+		_finish_pass_sequence(team, "restart")
+		_clear_box_runs(team, false)
+		_clear_team_shot_cooldowns(team)
+	restart_kind = kind
+	restart_pending = true
+	restart_awarded_team = awarded_team_index
+	restart_position = legal_position
+	restart_crossing_position = legal_position if crossing_position == Vector2.ZERO \
+		else crossing_position
+	restart_taker_id = taker.id
+	restart_receiver_id = receiver.id
+	restart_delay_remaining = maxf(0.0, delay_seconds)
+	ball_position = legal_position
+	ball_velocity = Vector2.ZERO
+	ball_owner = null
+	ball_target = null
+	decision_clock = 0.0
+	var last_touch := _last_touch_description()
+	var text := "[Restart] %s awarded to %s at (%.1f, %.1f); last touch: %s; taker %s (#%d), receiver %s (#%d)." % [
+		_restart_display_name(kind), teams[awarded_team_index].team_name,
+		legal_position.x, legal_position.y, last_touch,
+		taker.player_name, taker.id, receiver.player_name, receiver.id
+	]
+	if crossing_position != Vector2.ZERO:
+		text = "[Restart] %s awarded to %s at (%.1f, %.1f) from crossing (%.1f, %.1f); last touch: %s; taker %s (#%d), receiver %s (#%d)." % [
+			_restart_display_name(kind), teams[awarded_team_index].team_name,
+			legal_position.x, legal_position.y, crossing_position.x, crossing_position.y, last_touch,
+			taker.player_name, taker.id, receiver.player_name, receiver.id
+		]
+	_set_last_action(text, 1.0, "Deterministic restart; no action probability roll.")
+	return true
+
+func _execute_pending_restart() -> bool:
+	if not restart_pending:
+		return false
+	var taker := _find_player_by_id(restart_taker_id)
+	var receiver := _find_player_by_id(restart_receiver_id)
+	if taker == null or receiver == null or not taker.on_pitch or not receiver.on_pitch \
+	or taker.team_index != restart_awarded_team or receiver.team_index != restart_awarded_team \
+	or taker == receiver:
+		push_error("Pending restart references became invalid before execution.")
+		return false
+	var executed_kind := restart_kind
+	var executed_team := restart_awarded_team
+	var from_position := restart_position
+	restart_pending = false
+	restart_kind = RESTART_IN_PLAY
+	restart_awarded_team = -1
+	restart_taker_id = NO_PLAYER_ID
+	restart_receiver_id = NO_PLAYER_ID
+	restart_delay_remaining = 0.0
+	restart_crossing_position = Vector2.ZERO
+	ball_position = from_position
+	ball_owner = null
+	ball_target = receiver
+	var direction := receiver.position - from_position
+	if direction.length_squared() < 1.0:
+		direction = Vector2(1.0 if teams[executed_team].attacks_right else -1.0, 0.0)
+	ball_velocity = direction.normalized() * float(config["match"]["pass_ball_speed"])
+	last_touch_team_index = taker.team_index
+	last_touch_player_id = taker.id
+	var text := "[Restart] %s taken by %s (#%d) for %s (#%d); the ball is live." % [
+		_restart_display_name(executed_kind), taker.player_name, taker.id,
+		receiver.player_name, receiver.id
+	]
+	_set_last_action(text, 1.0, "Guaranteed deterministic restart delivery.")
+	return true
+
+func _choose_kickoff_receiver(team: FootballTeam, taker: FootballPlayer) -> FootballPlayer:
+	var receiver := _choose_ranked_restart_player(team, ["CF", "ST"], taker.position, true, taker)
+	if receiver != null:
+		return receiver
+	receiver = _choose_ranked_restart_player(
+		team, ["CM", "LCM", "RCM", "CDM", "LDM", "RDM", "CAM", "LM", "RM"], taker.position, true, taker
+	)
+	if receiver != null:
+		return receiver
+	return _choose_ranked_restart_player(team, [], taker.position, false, taker)
+
+func _choose_throw_in_taker(team: FootballTeam, position: Vector2) -> FootballPlayer:
+	var fullback := _choose_nearest_role_player(team, ["LB", "RB", "LWB", "RWB"], position)
+	if fullback != null:
+		return fullback
+	var fallback := _choose_ranked_restart_player(team, [], position, false)
+	if fallback != null:
+		var text := "[Restart] Throw-in fallback: formation %s has no LB/RB/LWB/RWB; nearest outfield player %s (#%d) takes it." % [
+			team.formation, fallback.player_name, fallback.id
+		]
+		event_log.append(text)
+		print(text)
+	return fallback
+
+func _choose_nearest_role_player(team: FootballTeam, roles: Array, position: Vector2) -> FootballPlayer:
+	var best: FootballPlayer = null
+	var best_distance := INF
+	for player in team.players:
+		if not player.on_pitch or not roles.has(player.tactical_role):
+			continue
+		var distance := player.position.distance_to(position)
+		if distance < best_distance or (
+			is_equal_approx(distance, best_distance) and (best == null or player.id < best.id)
+		):
+			best = player
+			best_distance = distance
+	return best
+
+func _choose_restart_taker(kind: String, team: FootballTeam, position: Vector2) -> FootballPlayer:
+	match kind:
+		RESTART_GOAL_KICK:
+			var keeper := _goalkeeper(team)
+			return keeper if keeper != null else _choose_ranked_restart_player(team, [], position, false)
+		RESTART_THROW_IN:
+			return _choose_throw_in_taker(team, position)
+		RESTART_CORNER:
+			if _has_restart_role(team, ["LW", "RW", "LM", "RM", "LWB", "RWB"]):
+				return _choose_ranked_restart_player(
+					team, ["LW", "RW", "LM", "RM", "LWB", "RWB"], position, true
+				)
+			return _choose_ranked_restart_player(team, [], position, false)
+		_:
+			return _choose_ranked_restart_player(team, [], position, false)
+
+func _choose_restart_receiver(
+	kind: String, team: FootballTeam, taker: FootballPlayer, position: Vector2
+) -> FootballPlayer:
+	if kind == RESTART_KICKOFF:
+		return _choose_kickoff_receiver(team, taker)
+	var preferred_roles: Array[String] = [
+		"CM", "LCM", "RCM", "CDM", "LDM", "RDM", "CAM", "ST", "CF", "LW", "RW"
+	]
+	if kind == RESTART_GOAL_KICK:
+		preferred_roles = ["CB", "LCB", "RCB", "LB", "RB", "LWB", "RWB", "CM", "CDM", "LCM", "RCM"]
+	var receiver := _choose_ranked_restart_player(team, preferred_roles, position, true, taker)
+	if receiver == null:
+		receiver = _choose_ranked_restart_player(team, [], position, false, taker)
+	return receiver
+
+func _choose_ranked_restart_player(
+	team: FootballTeam,
+	preferred_roles: Array,
+	position: Vector2,
+	use_role_score: bool,
+	excluded: FootballPlayer = null
+) -> FootballPlayer:
+	var best: FootballPlayer = null
+	var best_score := INF
+	var role_distance := float(config["match"]["restarts"]["role_preference_distance"])
+	for player in team.players:
+		if player == excluded or not player.on_pitch or player.tactical_role == "GK":
+			continue
+		var rank := preferred_roles.find(player.tactical_role)
+		if use_role_score and rank < 0:
+			continue
+		var score := player.position.distance_to(position)
+		if use_role_score:
+			score += float(rank) * role_distance
+		if score < best_score or (is_equal_approx(score, best_score) and (best == null or player.id < best.id)):
+			best = player
+			best_score = score
+	return best
+
+func _has_restart_role(team: FootballTeam, roles: Array) -> bool:
+	for player in team.players:
+		if player.on_pitch and roles.has(player.tactical_role):
+			return true
+	return false
+
+func _legal_restart_position(position: Vector2) -> Vector2:
+	var radius := float(config["field"]["ball_radius"])
+	var field_width := float(config["field"]["width"])
+	var field_height := float(config["field"]["height"])
+	return Vector2(
+		clampf(position.x, radius, field_width - radius),
+		clampf(position.y, radius, field_height - radius)
+	)
+
+func _find_boundary_crossing(previous: Vector2, current: Vector2) -> Dictionary:
+	var radius := float(config["field"]["ball_radius"])
+	var field_width := float(config["field"]["width"])
+	var field_height := float(config["field"]["height"])
+	var earliest_t := INF
+	var boundary := ""
+	var delta := current - previous
+	if current.x < -radius and delta.x < 0.0:
+		earliest_t = (-radius - previous.x) / delta.x
+		boundary = "left_goal_line"
+	elif current.x > field_width + radius and delta.x > 0.0:
+		earliest_t = (field_width + radius - previous.x) / delta.x
+		boundary = "right_goal_line"
+	var crossing_t: float
+	if current.y < -radius and delta.y < 0.0:
+		crossing_t = (-radius - previous.y) / delta.y
+		if crossing_t < earliest_t:
+			earliest_t = crossing_t
+			boundary = "top_touchline"
+	elif current.y > field_height + radius and delta.y > 0.0:
+		crossing_t = (field_height + radius - previous.y) / delta.y
+		if crossing_t < earliest_t:
+			earliest_t = crossing_t
+			boundary = "bottom_touchline"
+	if boundary.is_empty() or earliest_t < 0.0 or earliest_t > 1.0:
+		return {}
+	return {"boundary": boundary, "position": previous.lerp(current, earliest_t)}
+
+func _classify_out_of_bounds(boundary: String, crossing_position: Vector2) -> bool:
+	if restart_pending or finished:
+		return false
+	var last_touch_player := _find_player_by_id(last_touch_player_id)
+	if last_touch_team_index < 0 or last_touch_team_index >= teams.size() \
+	or last_touch_player == null:
+		push_error("Cannot award out-of-bounds restart without a valid last touch.")
+		return false
+	if last_touch_player.team_index != last_touch_team_index:
+		push_error("Cannot award out-of-bounds restart: last-touch player and team disagree.")
+		return false
+	var field_data: Dictionary = config["field"]
+	var radius := float(field_data["ball_radius"])
+	var awarded_team: int
+	var kind: String
+	var position := crossing_position
+	if boundary.ends_with("touchline"):
+		awarded_team = 1 - last_touch_team_index
+		kind = RESTART_THROW_IN
+		position.y = radius if boundary == "top_touchline" else float(field_data["height"]) - radius
+		position.x = clampf(position.x, radius, float(field_data["width"]) - radius)
+	elif boundary.ends_with("goal_line"):
+		var left_goal := boundary == "left_goal_line"
+		var defending_team := -1
+		for team_index in range(teams.size()):
+			if teams[team_index].attacks_right == left_goal:
+				defending_team = team_index
+				break
+		if defending_team < 0:
+			push_error("Cannot classify goal-line restart for boundary %s." % boundary)
+			return false
+		if last_touch_team_index == defending_team:
+			awarded_team = 1 - defending_team
+			kind = RESTART_CORNER
+			position.x = radius if left_goal else float(field_data["width"]) - radius
+			position.y = radius if crossing_position.y < float(field_data["height"]) * 0.5 \
+				else float(field_data["height"]) - radius
+		else:
+			awarded_team = defending_team
+			kind = RESTART_GOAL_KICK
+			var restart_data: Dictionary = config["match"]["restarts"]
+			position.x = float(restart_data["goal_area_depth"]) + radius \
+				if left_goal else float(field_data["width"]) - float(restart_data["goal_area_depth"]) - radius
+			var goal_area_half_width := float(restart_data["goal_area_width"]) * 0.5
+			position.y = clampf(
+				crossing_position.y,
+				float(field_data["height"]) * 0.5 - goal_area_half_width,
+				float(field_data["height"]) * 0.5 + goal_area_half_width
+			)
+	else:
+		push_error("Unknown out-of-bounds boundary: " + boundary)
+		return false
+	return _begin_restart(
+		kind, awarded_team, _legal_restart_position(position),
+		float(config["match"]["restarts"]["delay_seconds"]), crossing_position
+	)
+
+func _last_touch_description() -> String:
+	if last_touch_team_index < 0:
+		return "none recorded"
+	var player := _find_player_by_id(last_touch_player_id)
+	var player_text := "unknown player #%d" % last_touch_player_id
+	if player != null:
+		player_text = "%s (#%d)" % [player.player_name, player.id]
+	return "%s, %s" % [teams[last_touch_team_index].team_name, player_text]
+
+func _restart_display_name(kind: String) -> String:
+	match kind:
+		RESTART_KICKOFF:
+			return "kick-off"
+		RESTART_THROW_IN:
+			return "throw-in"
+		RESTART_CORNER:
+			return "corner kick"
+		RESTART_GOAL_KICK:
+			return "goal kick"
+		_:
+			return kind
 
 func _tactical_modifier(team: FootballTeam, action: String) -> float:
 	var modifiers: Dictionary = config["probability"]["tactical_modifiers"]
 	var mentality_modifiers: Dictionary = modifiers["mentality"]
 	var plan_modifiers: Dictionary = modifiers["game_plan"]
 	return float(mentality_modifiers[team.mentality]) + float(plan_modifiers[team.game_plan][action])
-
-func _restart_after_goal() -> void:
-	for team in teams:
-		_clear_team_shot_cooldowns(team)
-		_clear_box_runs(team, false)
-	var kickoff_player := teams[next_kickoff_team].players[9]
-	kickoff_player.position = Vector2(float(config["field"]["width"]) * 0.5, float(config["field"]["height"]) * 0.5)
-	_set_possession(kickoff_player)
-	_update_tactical_positions(teams[next_kickoff_team])
 
 func _set_last_action(text: String, probability: float, formula: String) -> void:
 	last_action = text

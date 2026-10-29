@@ -7,7 +7,7 @@ signal match_forfeited(winner_team: int)
 
 const CONFIG_PATH := "res://data/match_config.json"
 const HOST_PEER_ID := 1
-const PROTOCOL_VERSION := "gmn1-lockstep-2"
+const PROTOCOL_VERSION := "gmn1-lockstep-3"
 
 var simulation: MatchSimulation
 var offline_ai_enabled := true
