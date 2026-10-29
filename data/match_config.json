@@ -1,0 +1,431 @@
+{
+  "seed": 20261029,
+  "field": {
+    "width": 1000.0,
+    "height": 600.0,
+    "margin": 50.0,
+    "goal_width": 120.0,
+    "center_circle_radius": 75.0,
+    "penalty_area_depth": 150.0,
+    "penalty_area_height": 300.0,
+    "player_radius": 13.0,
+    "ball_radius": 5.0
+  },
+  "match": {
+    "half_duration_seconds": 180.0,
+    "tick_seconds": 0.1,
+    "simulation_seconds_per_real_second": 30.0,
+    "decision_interval_seconds": 2.5,
+    "tactical_change_cooldown_seconds": 15.0,
+    "ball_drag_per_second": 0.85,
+    "ball_spin_influence": 0.0,
+    "ball_minimum_speed": 25.0,
+    "pass_ball_speed": 420.0,
+    "player_move_speed": 38.0,
+    "carry_speed": 24.0,
+    "carry_advance_distance": 90.0,
+    "pass_arrival_radius": 19.0,
+    "player_boundary_margin": 25.0,
+    "goal_reset_seconds": 1.0,
+    "condition_fatigue_per_second": 0.0012,
+    "condition_form_change_per_success": 0.015,
+    "substitution_limit": 3,
+    "substitution_tactical_point_cost": 2,
+    "instruction_tactical_point_cost": 1,
+    "instruction_slots": 2,
+    "instruction_cooldown_seconds": 8.0,
+    "substitution_fatigue_inheritance": 0.35,
+    "substitution_form_inheritance": 0.5,
+    "tactical_points_maximum": 5,
+    "tactical_points_regen_per_minute": 1.0,
+    "halftime_restart_team_index": 1,
+    "tackle_decision": {
+      "maximum_attempt_distance": 92.0,
+      "jockey_distance": 118.0,
+      "goalside_cosine": 0.35,
+      "facing_defender_cosine": 0.5,
+      "minimum_stamina_percent": 34.0,
+      "maximum_fatigue": 0.78,
+      "carrier_commitment_distance": 42.0,
+      "base_attempt_chance": 0.24,
+      "minimum_attempt_chance": 0.02,
+      "maximum_attempt_chance": 0.95,
+      "goalside_attempt_bonus": 0.12,
+      "committed_carrier_attempt_bonus": 0.10,
+      "facing_carrier_attempt_penalty": 0.18,
+      "low_stamina_attempt_penalty": 0.22,
+      "fatigue_attempt_penalty": 0.22,
+      "failed_tackle_cooldown_seconds": 7.5,
+      "poor_position_cooldown_seconds": 3.5,
+      "mentality_attempt_modifiers": {
+        "Cautious": -0.16,
+        "Balanced": 0.0,
+        "Attacking": 0.14
+      },
+      "game_plan_attempt_modifiers": {
+        "Possession": -0.12,
+        "Direct": 0.02,
+        "Counter": 0.12
+      },
+      "role_attempt_modifiers": {
+        "defensive": 0.0,
+        "central": -0.04,
+        "attacking": -0.12
+      },
+      "pressure_pass_distance": 155.0,
+      "pressure_nearby_bonus": 45.0,
+      "pressure_safe_pass_bonus": 28.0,
+      "pressure_safe_pass_open_distance": 95.0,
+      "pressure_safe_pass_forward_limit": 35.0,
+      "pressure_progression_multiplier": 0.35,
+      "pressure_support_blend_bonus": 0.32,
+      "support_distance_weight": 1.0,
+      "support_openness_weight": 0.55
+    },
+    "minimum_probability": 0.03,
+    "maximum_probability": 0.97
+  },
+  "probability": {
+    "sigmoid_slope": 5.0,
+    "form_weight": 0.28,
+    "fatigue_weight": 0.65,
+    "fatigue_breakpoint_penalty": 0.18,
+    "long_pass_distance_scale": 0.0011,
+    "shot_distance_scale": 0.0045,
+    "shot_base_modifier": -1.05,
+    "tackle_pressure_scale": 0.0008,
+    "central_shot_distance": 100.0,
+    "central_shot_bonus": 0.12,
+    "preferred_zone_shot_bonus": 0.18,
+    "shot_pressure_distance": 100.0,
+    "shot_pressure_penalty": 0.16,
+    "goalkeeper_save_slope": 5.0,
+    "goalkeeper_distance_scale": 0.0012,
+    "goalkeeper_power_penalty": 0.55,
+    "goalkeeper_placement_penalty": 0.65,
+    "goalkeeper_pressure_bonus": 0.18,
+    "shot_power_attribute_weights": {"strength": 0.65, "finishing": 0.35},
+    "shot_placement_attribute_weights": {"technique": 0.65, "composure": 0.35},
+    "goalkeeper_tactical_modifiers": {
+      "mentality": {"Cautious": 0.08, "Balanced": 0.0, "Attacking": -0.04},
+      "game_plan": {"Possession": 0.0, "Direct": -0.02, "Counter": 0.02}
+    },
+    "rebound_slope": 4.0,
+    "rebound_base_modifier": -0.75,
+    "rebound_save_modifier": 0.30,
+    "rebound_support_distance": 210.0,
+    "rebound_support_bonus": 0.24,
+    "action_weights": {
+      "pass": {"passing": 0.42, "vision": 0.30, "technique": 0.28},
+      "shot": {"finishing": 0.52, "technique": 0.22, "composure": 0.16, "strength": 0.10},
+      "tackle": {"tackling": 0.56, "pace": 0.16, "strength": 0.16, "composure": 0.12},
+      "goalkeeper": {"diving": 0.24, "handling": 0.16, "positioning": 0.22, "reflexes": 0.24, "composure": 0.14},
+      "rebound": {"finishing": 0.34, "pace": 0.26, "composure": 0.20, "technique": 0.20}
+    },
+    "instructions": {
+      "push_fullbacks": {"advance_x": 80.0},
+      "drop_compact": {"drop_x": 65.0, "compact_y": 0.72},
+      "target_left_channel": {"channel_y": 0.28, "receiver_bonus": 42.0},
+      "target_right_channel": {"channel_y": 0.72, "receiver_bonus": 42.0},
+      "press_pivot": {"pivot_shirt_number": 6, "save_pressure_bonus": 0.12, "tackle_modifier": 0.18},
+      "direct_long_balls": {"forward_bonus": 45.0, "range_modifier": -0.12}
+    },
+    "movement": {
+      "mentality_advance_x": {"Cautious": -28.0, "Balanced": 0.0, "Attacking": 35.0},
+      "game_plan_advance_x": {"Possession": 0.0, "Direct": 24.0, "Counter": 16.0},
+      "possession_advance_x": 22.0,
+      "fullback_possession_advance_x": 24.0,
+      "compact_center_y": 0.5,
+      "winger_channel_blend": 0.35,
+      "ball_support_radius": 230.0,
+      "support_shape_blend": 0.48,
+      "support_offsets": [
+        [48.0, -68.0],
+        [48.0, 68.0],
+        [-68.0, -52.0],
+        [-68.0, 52.0]
+      ],
+      "direct_ball_movement_factor": 0.25
+    },
+    "ai": {
+      "enabled": true,
+      "losing_by_goals": 2,
+      "attacking_mentality": "Attacking",
+      "defensive_late_match_seconds": 60.0,
+      "defensive_mentality": "Cautious",
+      "defensive_game_plan": "Counter",
+      "reaction_cooldown_seconds": 20.0
+    },
+    "manager_tools": {
+      "substitution_selection": {
+        "stamina_weight": 1.0,
+        "pace_weight": 0.2,
+        "fatigue_penalty": 100.0,
+        "goalkeeper_reflexes_weight": 1.0,
+        "goalkeeper_positioning_weight": 0.5
+      },
+      "channel_probability_scale": 0.01
+    },
+    "tactical_modifiers": {
+      "mentality": {
+        "Cautious": -0.12,
+        "Balanced": 0.0,
+        "Attacking": 0.12
+      },
+      "game_plan": {
+        "Possession": {
+          "pass": 0.10,
+          "shot": -0.08,
+          "tackle": 0.0
+        },
+        "Direct": {
+          "pass": -0.05,
+          "shot": 0.08,
+          "tackle": 0.0
+        },
+        "Counter": {
+          "pass": 0.0,
+          "shot": 0.12,
+          "tackle": 0.08
+        }
+      }
+    }
+  },
+  "determinism_test": {
+    "half_duration_seconds": 30.0,
+    "command_ticks": {
+      "first_instruction": 10,
+      "second_instruction": 100,
+      "mentality_change": 180,
+      "substitution": 240
+    }
+  },
+  "network": {
+    "default_port": 24560,
+    "command_lead_ticks": 180,
+    "tick_beacon_interval": 15,
+    "state_hash_interval_ticks": 30,
+    "snapshot_interval_ticks": 300,
+    "snapshot_version": 3,
+    "reconnect_enabled": true,
+    "reconnect_timeout_seconds": 30.0,
+    "ping_interval_seconds": 1.0,
+    "disconnect_timeout_seconds": 10.0,
+    "maximum_client_catchup_ticks_per_frame": 120
+  },
+  "decision": {
+    "attacking_shot_threshold_bonus": 0.06,
+    "direct_shot_threshold_bonus": 0.06,
+    "possession_shot_threshold_penalty": 0.03,
+    "attacking_role_receiver_bonus": 20.0,
+    "possession_pass_range_factor": 0.6,
+    "channel_distance_scale": 0.35,
+    "pass_selection": {
+      "maximum_candidate_distance": 640.0,
+      "nearby_weight": 100.0,
+      "openness_weight": 32.0,
+      "openness_distance": 150.0,
+      "support_angle_weight": 28.0,
+      "possession_progression_weight": 24.0,
+      "direct_progression_weight": 72.0,
+      "backward_pass_penalty": 18.0,
+      "over_range_penalty_per_100": 18.0,
+      "direct_nearby_multiplier": 0.55,
+      "role_profiles": {
+        "defensive": {"nearby_multiplier": 1.35, "progression_multiplier": 0.55},
+        "central": {"nearby_multiplier": 1.15, "progression_multiplier": 0.8},
+        "attacking": {"nearby_multiplier": 0.85, "progression_multiplier": 1.25}
+      },
+      "minimum_build_up_passes_before_shot": 2,
+      "clear_chance_attack_x": 0.82,
+      "clear_chance_open_distance": 95.0
+    }
+  },
+  "thresholds": {
+    "fatigue_breakpoint": 0.72,
+    "shot_minimum_attack_x": 0.67,
+    "shot_preferred_attack_x": 0.82,
+    "rebound_minimum_probability": 0.05,
+    "rebound_maximum_probability": 0.75,
+    "instruction_duration_seconds": 60.0,
+    "tactical_point_regen_interval_seconds": 60.0
+  },
+  "formations": {
+    "4-3-3": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LB", "x": 0.20, "y": 0.16},
+      {"role": "LCB", "x": 0.16, "y": 0.39},
+      {"role": "RCB", "x": 0.16, "y": 0.61},
+      {"role": "RB", "x": 0.20, "y": 0.84},
+      {"role": "LCM", "x": 0.39, "y": 0.32},
+      {"role": "CM", "x": 0.42, "y": 0.50},
+      {"role": "RCM", "x": 0.39, "y": 0.68},
+      {"role": "LW", "x": 0.70, "y": 0.18},
+      {"role": "ST", "x": 0.76, "y": 0.50},
+      {"role": "RW", "x": 0.70, "y": 0.82}
+    ],
+    "4-3-3 (Holding)": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LB", "x": 0.20, "y": 0.16},
+      {"role": "LCB", "x": 0.16, "y": 0.39},
+      {"role": "RCB", "x": 0.16, "y": 0.61},
+      {"role": "RB", "x": 0.20, "y": 0.84},
+      {"role": "CDM", "x": 0.32, "y": 0.50},
+      {"role": "LCM", "x": 0.45, "y": 0.34},
+      {"role": "RCM", "x": 0.45, "y": 0.66},
+      {"role": "LW", "x": 0.70, "y": 0.18},
+      {"role": "ST", "x": 0.76, "y": 0.50},
+      {"role": "RW", "x": 0.70, "y": 0.82}
+    ],
+    "4-3-3 (Attacking)": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LB", "x": 0.22, "y": 0.16},
+      {"role": "LCB", "x": 0.18, "y": 0.39},
+      {"role": "RCB", "x": 0.18, "y": 0.61},
+      {"role": "RB", "x": 0.22, "y": 0.84},
+      {"role": "LCM", "x": 0.43, "y": 0.34},
+      {"role": "CM", "x": 0.47, "y": 0.50},
+      {"role": "RCM", "x": 0.43, "y": 0.66},
+      {"role": "LW", "x": 0.74, "y": 0.18},
+      {"role": "ST", "x": 0.82, "y": 0.50},
+      {"role": "RW", "x": 0.74, "y": 0.82}
+    ],
+    "4-3-3 (False 9)": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LB", "x": 0.20, "y": 0.16},
+      {"role": "LCB", "x": 0.16, "y": 0.39},
+      {"role": "RCB", "x": 0.16, "y": 0.61},
+      {"role": "RB", "x": 0.20, "y": 0.84},
+      {"role": "LCM", "x": 0.39, "y": 0.32},
+      {"role": "CM", "x": 0.42, "y": 0.50},
+      {"role": "RCM", "x": 0.39, "y": 0.68},
+      {"role": "LW", "x": 0.70, "y": 0.18},
+      {"role": "CF", "x": 0.64, "y": 0.50},
+      {"role": "RW", "x": 0.70, "y": 0.82}
+    ],
+    "4-4-2": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LB", "x": 0.20, "y": 0.16},
+      {"role": "LCB", "x": 0.16, "y": 0.39},
+      {"role": "RCB", "x": 0.16, "y": 0.61},
+      {"role": "RB", "x": 0.20, "y": 0.84},
+      {"role": "LM", "x": 0.40, "y": 0.16},
+      {"role": "LCM", "x": 0.39, "y": 0.39},
+      {"role": "RCM", "x": 0.39, "y": 0.61},
+      {"role": "RM", "x": 0.40, "y": 0.84},
+      {"role": "ST", "x": 0.70, "y": 0.39},
+      {"role": "CF", "x": 0.70, "y": 0.61}
+    ],
+    "4-2-3-1": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LB", "x": 0.20, "y": 0.16},
+      {"role": "LCB", "x": 0.16, "y": 0.39},
+      {"role": "RCB", "x": 0.16, "y": 0.61},
+      {"role": "RB", "x": 0.20, "y": 0.84},
+      {"role": "LDM", "x": 0.34, "y": 0.40},
+      {"role": "RDM", "x": 0.34, "y": 0.60},
+      {"role": "LW", "x": 0.58, "y": 0.16},
+      {"role": "CAM", "x": 0.60, "y": 0.50},
+      {"role": "RW", "x": 0.58, "y": 0.84},
+      {"role": "ST", "x": 0.78, "y": 0.50}
+    ],
+    "4-1-4-1": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LB", "x": 0.20, "y": 0.16},
+      {"role": "LCB", "x": 0.16, "y": 0.39},
+      {"role": "RCB", "x": 0.16, "y": 0.61},
+      {"role": "RB", "x": 0.20, "y": 0.84},
+      {"role": "CDM", "x": 0.33, "y": 0.50},
+      {"role": "LM", "x": 0.48, "y": 0.16},
+      {"role": "LCM", "x": 0.46, "y": 0.39},
+      {"role": "RCM", "x": 0.46, "y": 0.61},
+      {"role": "RM", "x": 0.48, "y": 0.84},
+      {"role": "ST", "x": 0.74, "y": 0.50}
+    ],
+    "3-5-2": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LCB", "x": 0.17, "y": 0.27},
+      {"role": "CB", "x": 0.15, "y": 0.50},
+      {"role": "RCB", "x": 0.17, "y": 0.73},
+      {"role": "LWB", "x": 0.39, "y": 0.12},
+      {"role": "LCM", "x": 0.39, "y": 0.36},
+      {"role": "CM", "x": 0.42, "y": 0.50},
+      {"role": "RCM", "x": 0.39, "y": 0.64},
+      {"role": "RWB", "x": 0.39, "y": 0.88},
+      {"role": "ST", "x": 0.70, "y": 0.39},
+      {"role": "CF", "x": 0.70, "y": 0.61}
+    ],
+    "5-3-2": [
+      {"role": "GK", "x": 0.05, "y": 0.50},
+      {"role": "LWB", "x": 0.20, "y": 0.12},
+      {"role": "LCB", "x": 0.16, "y": 0.32},
+      {"role": "CB", "x": 0.15, "y": 0.50},
+      {"role": "RCB", "x": 0.16, "y": 0.68},
+      {"role": "RWB", "x": 0.20, "y": 0.88},
+      {"role": "LCM", "x": 0.41, "y": 0.32},
+      {"role": "CM", "x": 0.43, "y": 0.50},
+      {"role": "RCM", "x": 0.41, "y": 0.68},
+      {"role": "ST", "x": 0.70, "y": 0.39},
+      {"role": "CF", "x": 0.70, "y": 0.61}
+    ]
+  },
+  "player_templates": {
+    "GK": {"goalkeeping": 78, "diving": 80, "handling": 78, "positioning": 82, "reflexes": 84, "passing": 56, "vision": 54, "technique": 50, "finishing": 24, "tackling": 45, "pace": 48, "stamina": 74, "composure": 72, "strength": 70},
+    "DEF": {"goalkeeping": 12, "diving": 10, "handling": 12, "positioning": 15, "reflexes": 12, "passing": 62, "vision": 58, "technique": 58, "finishing": 34, "tackling": 78, "pace": 67, "stamina": 78, "composure": 68, "strength": 76},
+    "MID": {"goalkeeping": 8, "diving": 8, "handling": 8, "positioning": 10, "reflexes": 8, "passing": 76, "vision": 78, "technique": 75, "finishing": 60, "tackling": 65, "pace": 72, "stamina": 84, "composure": 73, "strength": 65},
+    "ATT": {"goalkeeping": 5, "diving": 5, "handling": 5, "positioning": 8, "reflexes": 5, "passing": 69, "vision": 72, "technique": 79, "finishing": 80, "tackling": 38, "pace": 83, "stamina": 76, "composure": 77, "strength": 69},
+    "GK2": {"goalkeeping": 75, "diving": 78, "handling": 76, "positioning": 79, "reflexes": 81, "passing": 59, "vision": 58, "technique": 54, "finishing": 22, "tackling": 46, "pace": 52, "stamina": 78, "composure": 75, "strength": 72}
+  },
+  "teams": [
+    {
+      "name": "Northbridge",
+      "color": "#45b7e5",
+      "formation": "4-3-3",
+      "players": [
+        {"name": "Mason", "number": 1, "role": "GK", "template": "GK"},
+        {"name": "Lewis", "number": 2, "role": "RB", "template": "DEF"},
+        {"name": "Carter", "number": 4, "role": "CB", "template": "DEF"},
+        {"name": "Reed", "number": 5, "role": "CB", "template": "DEF"},
+        {"name": "Hayes", "number": 3, "role": "LB", "template": "DEF"},
+        {"name": "Price", "number": 6, "role": "CM", "template": "MID"},
+        {"name": "Ward", "number": 8, "role": "CM", "template": "MID"},
+        {"name": "Brooks", "number": 10, "role": "CM", "template": "MID"},
+        {"name": "Cole", "number": 11, "role": "LW", "template": "ATT"},
+        {"name": "Bennett", "number": 9, "role": "ST", "template": "ATT"},
+        {"name": "Gray", "number": 7, "role": "RW", "template": "ATT"}
+      ],
+      "bench": [
+        {"name": "Dawson", "number": 12, "role": "GK", "template": "GK2"},
+        {"name": "Foster", "number": 14, "role": "DEF", "template": "DEF"},
+        {"name": "Mills", "number": 15, "role": "MID", "template": "MID"},
+        {"name": "Wells", "number": 16, "role": "ATT", "template": "ATT"},
+        {"name": "Porter", "number": 17, "role": "MID", "template": "MID"}
+      ]
+    },
+    {
+      "name": "Eastvale",
+      "color": "#ef765f",
+      "formation": "4-3-3",
+      "players": [
+        {"name": "Parker", "number": 1, "role": "GK", "template": "GK"},
+        {"name": "Young", "number": 2, "role": "RB", "template": "DEF"},
+        {"name": "King", "number": 4, "role": "CB", "template": "DEF"},
+        {"name": "Scott", "number": 5, "role": "CB", "template": "DEF"},
+        {"name": "Hill", "number": 3, "role": "LB", "template": "DEF"},
+        {"name": "Adams", "number": 6, "role": "CM", "template": "MID"},
+        {"name": "Turner", "number": 8, "role": "CM", "template": "MID"},
+        {"name": "Green", "number": 10, "role": "CM", "template": "MID"},
+        {"name": "Baker", "number": 11, "role": "LW", "template": "ATT"},
+        {"name": "Nelson", "number": 9, "role": "ST", "template": "ATT"},
+        {"name": "Mitchell", "number": 7, "role": "RW", "template": "ATT"}
+      ],
+      "bench": [
+        {"name": "Hughes", "number": 12, "role": "GK", "template": "GK2"},
+        {"name": "Morgan", "number": 14, "role": "DEF", "template": "DEF"},
+        {"name": "Cruz", "number": 15, "role": "MID", "template": "MID"},
+        {"name": "Bailey", "number": 16, "role": "ATT", "template": "ATT"},
+        {"name": "Ross", "number": 17, "role": "MID", "template": "MID"}
+      ]
+    }
+  ]
+}

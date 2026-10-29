@@ -1,0 +1,129 @@
+extends SceneTree
+
+const SimulationScript = preload("res://scripts/simulation/match_simulation.gd")
+
+func _initialize() -> void:
+	call_deferred("_run_test")
+
+func _run_test() -> void:
+	var first := _run_match()
+	var second := _run_match()
+	if (
+		first["home_score"] != second["home_score"]
+		or first["away_score"] != second["away_score"]
+		or first["events"] != second["events"]
+		or first["commands"] != second["commands"]
+		or first["hashes"] != second["hashes"]
+		or not first["snapshot_roundtrip"]
+		or not second["snapshot_roundtrip"]
+	):
+		push_error("Determinism test failed: identical seed/commands produced different results.")
+		quit(1)
+		return
+	if not first["events"].has("HALFTIME: teams switch ends"):
+		push_error("Determinism test failed: halftime switch event was not recorded.")
+		quit(1)
+		return
+	var logged_substitution := false
+	var logged_instructions := 0
+	for event in first["events"]:
+		if " substitutes " in str(event):
+			logged_substitution = true
+		if " activates " in str(event):
+			logged_instructions += 1
+	if not logged_substitution:
+		push_error("Determinism test failed: scheduled substitution was not recorded.")
+		quit(1)
+		return
+	if logged_instructions < 2:
+		push_error("Determinism test failed: scheduled instructions were not recorded.")
+		quit(1)
+		return
+	print("PASS: deterministic score %d-%d; %d key events and %d state hashes match; snapshot replay verified." % [
+		int(first["home_score"]), int(first["away_score"]), first["events"].size(), first["hashes"].size()
+	])
+	quit(0)
+
+func _run_match() -> Dictionary:
+	var simulation: MatchSimulation = SimulationScript.new()
+	root.add_child(simulation)
+	var test_config: Dictionary = simulation.config["determinism_test"]
+	simulation.config["match"]["half_duration_seconds"] = float(test_config["half_duration_seconds"])
+	if not simulation.setup_match("4-3-3"):
+		push_error("Determinism test could not initialize a match.")
+		simulation.free()
+		return {"home_score": -1, "away_score": -1, "events": [], "commands": [], "hashes": [], "snapshot_roundtrip": false}
+	var commands := _recorded_command_stream(test_config["command_ticks"])
+	var hash_history: Array[Dictionary] = []
+	var snapshot_roundtrip := false
+	var replay_simulation: MatchSimulation
+	for command in commands:
+		if int(command["tick"]) == 0:
+			if not simulation.apply_manager_command(
+				int(command["team"]), str(command["kind"]), str(command["value"]), int(command["player_index"])
+			):
+				push_error("Determinism test rejected setup command: " + str(command))
+				simulation.free()
+				return {"home_score": -1, "away_score": -1, "events": [], "commands": [], "hashes": [], "snapshot_roundtrip": false}
+	simulation.externally_ticked = true
+	simulation.start_match()
+	var total_ticks := int(float(test_config["half_duration_seconds"]) * 2.0 / float(simulation.config["match"]["tick_seconds"]))
+	for tick in range(1, total_ticks + 1):
+		for command in commands:
+			if int(command["tick"]) != tick:
+				continue
+			if not simulation.apply_manager_command(
+				int(command["team"]), str(command["kind"]), str(command["value"]), int(command["player_index"])
+			):
+				push_error("Determinism test rejected recorded command: " + str(command))
+				simulation.free()
+				return {"home_score": -1, "away_score": -1, "events": [], "commands": [], "hashes": [], "snapshot_roundtrip": false}
+			if replay_simulation != null and not replay_simulation.apply_manager_command(
+				int(command["team"]), str(command["kind"]), str(command["value"]), int(command["player_index"])
+			):
+				push_error("Determinism test replay rejected command: " + str(command))
+				simulation.free()
+				replay_simulation.free()
+				return {"home_score": -1, "away_score": -1, "events": [], "commands": [], "hashes": [], "snapshot_roundtrip": false}
+		simulation.step_tick()
+		if replay_simulation != null:
+			replay_simulation.step_tick()
+		if tick == int(total_ticks / 3):
+			var snapshot := simulation.create_snapshot()
+			replay_simulation = SimulationScript.new()
+			root.add_child(replay_simulation)
+			replay_simulation.config["match"]["half_duration_seconds"] = float(test_config["half_duration_seconds"])
+			if replay_simulation.setup_match("4-3-3"):
+				replay_simulation.externally_ticked = true
+				snapshot_roundtrip = replay_simulation.restore_snapshot(snapshot) \
+					and replay_simulation.get_state_hash() == simulation.get_state_hash()
+			else:
+				replay_simulation.free()
+				replay_simulation = null
+		var hash_interval := int(simulation.config["network"]["state_hash_interval_ticks"])
+		if tick % hash_interval == 0:
+			hash_history.append({"tick": tick, "hash": simulation.get_state_hash()})
+	var result := {
+		"home_score": simulation.teams[0].score,
+		"away_score": simulation.teams[1].score,
+		"events": simulation.event_log.duplicate(),
+		"commands": commands.duplicate(true),
+		"hashes": hash_history,
+		"snapshot_roundtrip": snapshot_roundtrip and replay_simulation != null \
+			and replay_simulation.get_state_hash() == simulation.get_state_hash()
+	}
+	simulation.free()
+	if replay_simulation != null:
+		replay_simulation.free()
+	return result
+
+func _recorded_command_stream(command_ticks: Dictionary) -> Array[Dictionary]:
+	var commands: Array[Dictionary] = [
+		{"tick": 0, "team": 0, "kind": "mentality", "value": "Attacking", "player_index": -1},
+		{"tick": 0, "team": 0, "kind": "game_plan", "value": "Direct", "player_index": -1},
+		{"tick": int(command_ticks["first_instruction"]) + 1, "team": 0, "kind": "instruction", "value": "push_fullbacks", "player_index": -1},
+		{"tick": int(command_ticks["second_instruction"]) + 1, "team": 0, "kind": "instruction", "value": "direct_long_balls", "player_index": -1},
+		{"tick": int(command_ticks["mentality_change"]) + 1, "team": 0, "kind": "mentality", "value": "Balanced", "player_index": -1},
+		{"tick": int(command_ticks["substitution"]) + 1, "team": 0, "kind": "substitution", "value": "", "player_index": 7}
+	]
+	return commands

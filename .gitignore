@@ -1,0 +1,32 @@
+# Godot editor and imported resource caches
+.godot/
+.import/
+*.import
+*.translation
+
+# Local export configuration
+export_presets.cfg
+
+# Temporary files, logs, and editor swap files
+*.tmp
+*.log
+*.swp
+*.swo
+*~
+
+# User-specific editor and cache directories
+.vscode/
+.idea/
+.vs/
+.cache/
+__pycache__/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Build/export output
+build/
+dist/
+exports/
