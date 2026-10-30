@@ -158,3 +158,47 @@ The following are final authoritative hashes after the restart delivery reached 
 - Final worktree: branch `main`, same `HEAD` SHA above, no staged changes, no commit or push. The six pre-existing modified tracked files remain; validation adds the updated test content plus the new `restart_validation_test.gd` and `restart_validation_test.gd.uid`.
 
 **Verdict: CONDITIONAL PASS.** All five primary restart scenarios and deterministic/snapshot checks passed on Godot 4.7.2. Real host/client restart synchronization remains unproven; next step is a two-process Godot host/client test covering at least one boundary restart.
+
+## I. Final Local Restart Acceptance Rerun
+
+This section supersedes older branch, worktree, command-duration, and test-result statements in Section H. Restart commit `569aa04951eafdc9c20108baadf124fac159e0c9` is included in the merge commit on `main`, `099af7ce8e8a26e801f55d28856ce30a5951491a`. The local kickoff-layout changes remain uncommitted.
+
+### Results
+
+| Check | Result | Evidence |
+|---|---|---|
+| Godot editor import / project load | **PASS** | Godot `4.7.2.stable.official.ed1daf0bf`, exit 0 after kickoff-layout changes. |
+| Kickoff layout, 4-3-3 | **PASS** | All 22 positions matched formation slots in each team's own half; midfield and forward bands were present. Halftime mirrored both sides and executed the second-half kickoff. |
+| Kickoff layout, 4-2-3-1 | **PASS** | All 22 positions matched formation slots in each team's own half, including the double pivot, attacking midfield line, and striker. Halftime mirroring and restart passed. |
+| Kickoff, two-forward formation | **PASS** | 4-4-2 pass vector `(-150, 66)`, distance `163.878px` of `300px`; receiver was a CF. Receiver controlled the ball at tick 4. |
+| Kickoff, single-striker formation | **PASS** | 4-3-3 pass vector `(-290, 0)`, distance `290px` of `300px`; receiver was a CM. Receiver controlled the ball at tick 9. |
+| Throw-in, top touchline | **PASS** | Crossing `(500,-5)` after Northbridge last touch; Eastvale awarded the throw at `(500,5)`. Fullback Hill (#103) delivered to Turner (#108); exactly one award. |
+| Throw-in, bottom touchline | **PASS** | Crossing `(500,605)` after Eastvale last touch; Northbridge awarded the throw at `(500,595)`. Fullback Lewis (#2) delivered to Ward (#8); exactly one award. |
+| Corner, left goal line | **PASS** | Defensive Northbridge last touch outside the goal mouth; Eastvale corner at `(5,5)`. Baker (#111) delivered to Turner (#108); no goal and exactly one award. |
+| Corner, right goal line | **PASS** | Defensive Eastvale last touch outside the goal mouth; Northbridge corner at `(995,595)`. Gray (#7) delivered to Ward (#8); no goal and exactly one award. |
+| Goal kicks, both ends | **PASS** | Correct last-touch classification and goalkeeper delivery to an eligible teammate; exactly one award per scenario. |
+| Post-goal kickoff | **PASS** | Eastvale received the restart after a Northbridge goal; CM receiver controlled the ball at tick 20. |
+| Deterministic replay / snapshot regression | **PASS** | Score 1-0; 132 key events and 20 state hashes matched; snapshot replay verified. |
+
+For each restart, the test checked the production award/execution path, last-touch team/player, eligible taker and receiver, restart location, in-play transition, cleared restart references, ball movement, eventual receiver possession, and absence of a duplicate award after resumption. Pending boundary restarts were also snapshot-restored into a peer simulation and replayed with matching state hashes. The deliberately malformed snapshot produces an expected rejection warning.
+
+Kickoff layout is applied by the production restart placement routine using the configured formation slots, `kickoff_own_half_depth_ratio`, and each side's current attack direction. The same routine runs after halftime end-switches. A single placement log records both formations, attack directions, taker, and receiver. Position-dump assertions cover 4-3-3 and 4-2-3-1 at initial kickoff and halftime.
+
+### Commands and exit codes
+
+Godot runtime: `4.7.2.stable.official.ed1daf0bf`, executable `C:\Users\USER\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe`.
+
+- `... --headless --editor --path "C:\Users\USER\Documents\Project\GMN1" --quit` — **exit 0**.
+- `... --headless --path "C:\Users\USER\Documents\Project\GMN1" --script "res://scripts/tests/determinism_test.gd"` — **exit 0**; 132 key events and 20 hashes matched.
+- `... --headless --path "C:\Users\USER\Documents\Project\GMN1" --script "res://scripts/tests/restart_validation_test.gd"` — **exit 0**; kickoff layout checks for 4-3-3 and 4-2-3-1, halftime switch, all restart scenarios, and replay checks passed.
+- `git diff --check` — **PASS**.
+
+### Scope and final worktree
+
+- Host/client ENet synchronization and reconnect: **NOT RUN**. The snapshot peer tests are two local simulations, not a real two-process network test.
+- UI/network status after restart: **NOT RUN**. The headless acceptance test validates simulation active/finished flags and restart metadata, but does not instantiate the live UI or network session.
+- Interactive playtest: **NOT RUN**; layout acceptance used production simulation position dumps headlessly.
+- Branch: `main`; `HEAD` and `origin/main`: `099af7ce8e8a26e801f55d28856ce30a5951491a`.
+- Local changes at time of this report update: README, simulation kickoff log, layout/restart tests, and this report.
+
+**Verdict: LOCAL ACCEPTANCE PASS.** Restart and kickoff-layout simulation tests pass. Multiplayer/reconnect, interactive playtesting, and live UI status remain unverified.

@@ -2303,6 +2303,8 @@ func _begin_restart(
 	if receiver == null or receiver == taker or receiver.team_index != awarded_team_index or not receiver.on_pitch:
 		push_error("Cannot begin %s: no valid receiver for %s." % [kind, teams[awarded_team_index].team_name])
 		return false
+	if kind == RESTART_KICKOFF:
+		_log_kickoff_placement(taker, receiver)
 	for team in teams:
 		_finish_pass_sequence(team, "restart")
 		_clear_box_runs(team, false)
@@ -2371,6 +2373,20 @@ func _execute_pending_restart() -> bool:
 	]
 	_set_last_action(text, 1.0, "Guaranteed deterministic restart delivery.")
 	return true
+
+func _log_kickoff_placement(taker: FootballPlayer, receiver: FootballPlayer) -> void:
+	var team_descriptions: Array[String] = []
+	for team in teams:
+		var direction := "right" if team.attacks_right else "left"
+		team_descriptions.append("%s %s attacks %s" % [
+			team.team_name, team.formation, direction
+		])
+	var text := "[Match] [Kickoff layout] %s; %s; taker %s (#%d), receiver %s (#%d)." % [
+		team_descriptions[0], team_descriptions[1],
+		taker.player_name, taker.id, receiver.player_name, receiver.id
+	]
+	event_log.append(text)
+	print(text)
 
 func _choose_kickoff_receiver(team: FootballTeam, taker: FootballPlayer) -> FootballPlayer:
 	var receiver := _choose_ranked_restart_player(team, ["CF", "ST"], taker.position, true, taker)
