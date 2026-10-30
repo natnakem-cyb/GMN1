@@ -264,6 +264,15 @@ func _run_ball_out_test(
 	simulation.ball_position = position
 	simulation.ball_velocity = velocity
 	var last_touch_player: FootballPlayer = simulation.teams[last_touch_team].players[2]
+	for defender in simulation.teams[1 - last_touch_team].players:
+		defender.position = Vector2(-500.0, -500.0)
+	simulation.ball_position_3d = Vector3(position.x, position.y, float(simulation.config["match"]["ball_flight"]["ball_radius_px"]))
+	simulation.ball_velocity_3d = Vector3(velocity.x, velocity.y, 0.0)
+	simulation.ball_in_flight = true
+	simulation.ball_on_ground = true
+	simulation.ball_flight_phase = "ground_pass"
+	simulation.ball_pass_probability = 1.0
+	simulation.ball_shooter_id = last_touch_player.id
 	simulation.last_touch_team_index = last_touch_team
 	simulation.last_touch_player_id = last_touch_player.id
 	if remove_fullbacks:
@@ -309,10 +318,18 @@ func _run_goal_restart_test() -> bool:
 	simulation.config["probability"]["goalkeeper_save_slope"] = 100.0
 	simulation.config["probability"]["action_weights"]["shot"] = {"finishing": 1.0}
 	simulation.config["probability"]["action_weights"]["goalkeeper"] = {"goalkeeping": 1.0}
-	simulation._goalkeeper(simulation.teams[1]).attributes["goalkeeping"] = 0
+	var goalkeeper := simulation._goalkeeper(simulation.teams[1])
+	goalkeeper.attributes["goalkeeping"] = 0
+	goalkeeper.position = Vector2(950.0, 0.0)
+	goalkeeper.tactical_position = goalkeeper.position
 	var score_before := simulation.teams[0].score
 	var kickoff_awards_before := _count_restart_awards(simulation, "kick-off")
+	simulation._set_possession(shooter)
 	simulation._resolve_shot(shooter, simulation.teams[0])
+	for _flight_tick in range(40):
+		if simulation.restart_pending:
+			break
+		simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
 	if simulation.teams[0].score != score_before + 1 or not simulation.restart_pending \
 	or simulation.restart_kind != "kickoff" or simulation.restart_awarded_team != 1 \
 	or simulation.next_kickoff_team != 1 \
@@ -359,7 +376,12 @@ func _run_missed_shot_restart_test() -> bool:
 	simulation.config["match"]["minimum_probability"] = 0.0
 	simulation.config["match"]["maximum_probability"] = 0.0
 	simulation.config["probability"]["action_weights"]["shot"] = {"finishing": 1.0}
+	simulation._set_possession(shooter)
 	simulation._resolve_shot(shooter, simulation.teams[0])
+	for _flight_tick in range(80):
+		if simulation.restart_pending:
+			break
+		simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
 	var passed := simulation.restart_pending and simulation.restart_kind == "goal_kick" \
 		and simulation.restart_awarded_team == 1 \
 		and simulation.ball_owner == null and simulation.ball_target == null
@@ -388,14 +410,25 @@ func _run_saved_shot_corner_test() -> bool:
 	simulation.config["probability"]["goalkeeper_save_slope"] = 100.0
 	simulation.config["probability"]["action_weights"]["shot"] = {"finishing": 1.0}
 	simulation.config["probability"]["action_weights"]["goalkeeper"] = {"goalkeeping": 1.0}
-	simulation.config["match"]["restarts"]["saved_shot_corner_probability"] = 1.0
-	simulation._goalkeeper(simulation.teams[1]).attributes["goalkeeping"] = 100
+	var goalkeeper := simulation._goalkeeper(simulation.teams[1])
+	goalkeeper.attributes["goalkeeping"] = 100
+	goalkeeper.position = Vector2(950.0, 200.0)
+	goalkeeper.tactical_position = goalkeeper.position
+	simulation._set_possession(shooter)
 	simulation._resolve_shot(shooter, simulation.teams[0])
-	var passed := simulation.restart_pending and simulation.restart_kind == "corner_kick" \
-		and simulation.restart_awarded_team == 0 \
-		and simulation.last_touch_team_index == 1
+	for _flight_tick in range(40):
+		if simulation.ball_keeper_attempted:
+			break
+		simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
+	var keeper_impulse_logged := false
+	for event in simulation.event_log:
+		if str(event).contains("save impulse"):
+			keeper_impulse_logged = true
+	var passed := simulation.ball_keeper_attempted and keeper_impulse_logged \
+		and simulation.ball_in_flight and simulation.ball_flight_phase == "rebound" \
+		and not simulation.restart_pending and simulation.last_touch_team_index == 1
 	if not passed:
-		push_error("Restart test failed: configured keeper deflection did not produce a corner.")
+		push_error("Restart test failed: keeper contact did not redirect an in-flight shot.")
 	simulation.free()
 	return passed
 

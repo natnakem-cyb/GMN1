@@ -39,6 +39,12 @@ GMN1 is an early playable prototype focused on its simulation and networking cor
 
 The simulation advances in fixed 0.1-second match-time steps. The RNG is seeded from `data/match_config.json`; resetting the match with the same seed, formation, and manager commands reproduces the same outcomes. Resolved actions and their probability formula are also printed to the Godot output panel.
 
+### Physical ball flight (Phase A)
+
+Players remain 2D circles on the pitch, while the authoritative ball uses a deterministic 3D custom integrator (`x` = pitch length, `y` = pitch width, `z` = height). Passes and shots move over fixed simulation ticks. Pass success is resolved when the moving ball reaches its receiver; a defender within the configured low-ball interception radius can take it first. Shot accuracy selects an aim lane at launch; goals, frame hits, goalkeeper saves, and out-of-play restarts follow from the ball's path and contacts. A keeper save redirects the ball with an impulse. Outfield blocks are intentionally skipped in Phase A; player bodies do not collide with the ball in flight.
+
+`field.pitch_length_m` sets the horizontal scale. The default 1,000 px pitch length represents 105 m, or about 9.524 px/m (0.105 m/px). FIFA-like goal dimensions of 7.32 m by 2.44 m therefore produce a 69.7 px-wide by 23.2 px-high mouth. Ball radius, post/crossbar radii, gravity, air drag, ground restitution/friction, shot/pass speeds, keeper reach, and sleep thresholds are in `match.ball_flight`; speed values use px/s and gravity uses px/s² under this same pitch-length scale. The 2D renderer continues to draw the ball at its pitch projection and does not yet visualize height. Ball position, velocity, flight phase, and contact flags are included in hashes and schema-version-6 snapshots.
+
 ## Formations and collective play
 
 The formation selector is populated from `formations` in `data/match_config.json`. Available shapes are **4-4-2**, **4-2-3-1**, **4-3-3**, **4-3-3 (Holding)**, **4-3-3 (Attacking)**, **4-3-3 (False 9)**, **4-1-4-1**, **3-5-2**, and **5-3-2**. Every shape has eleven role-labelled slots with normalized `x`/`y` coordinates; `x` is the team's attacking direction and is mirrored at halftime. Players retain their natural roster role while a separate tactical role maps them into the selected shape.
@@ -70,7 +76,7 @@ Under pressure, nearby options gain value, forward progression and backward-pass
 [Possession] Northbridge sequence ended after 2 completed passes (shot).
 ```
 
-Tuning is in `match.tackle_decision` in `data/match_config.json`: tackle/jockey ranges, angle and condition thresholds, attempt-rate modifiers by mentality/game plan/role, cooldown durations, pressure-pass weights, and pressure-support strength. Per-player carry distance and tackle cooldown are serialized and included in state hashes/snapshots; the snapshot schema version is 3.
+Tuning is in `match.tackle_decision` in `data/match_config.json`: tackle/jockey ranges, angle and condition thresholds, attempt-rate modifiers by mentality/game plan/role, cooldown durations, pressure-pass weights, and pressure-support strength. Per-player carry distance and tackle cooldown are serialized and included in state hashes/snapshots; the overall snapshot schema is version 6.
 
 ## PVP networking and reconnect
 
@@ -91,28 +97,15 @@ For LAN play use the host's private IP. Internet play may require UDP port forwa
 
 The PVP line in the debug overlay includes role, local/host tick, ping, received sequence, last applied command, sync state, hash result, last hash tick, and out-of-order count. The other lines show both teams' tactical points, substitutions remaining, and instructions. Command acceptance/rejection/application is reported on screen and in the Godot output.
 
-For passes, shot quality, tackles, goalkeeper saves, and rebounds, the engine computes a weighted average of relevant player attributes (each attribute is on a 0–100 scale and normalized to 0–1). It then evaluates:
+Pass accuracy, shot accuracy, tackles, and goalkeeper saves use weighted player attributes (each attribute is on a 0–100 scale and normalized to 0–1), evaluated with the shared sigmoid probability model:
 
 `p = clamp(sigmoid((weighted_skill - 0.50) * slope + context + form * form_weight - fatigue_penalty), minimum_probability, maximum_probability)`
 
-where `sigmoid(x) = 1 / (1 + exp(-x))`. Context includes tactical modifiers and action-specific range or pressure. Fatigue incurs a smooth penalty and an extra penalty at the configured breakpoint; form is a small additive modifier. Each action performs one seeded RNG draw against `p`. The debug panel shows the last action, its probability, and the active formula/weights.
+where `sigmoid(x) = 1 / (1 + exp(-x))`. Context includes tactical modifiers and action-specific range or pressure. Fatigue incurs a smooth penalty and an extra penalty at the configured breakpoint; form is a small additive modifier. The debug panel shows the last resolved probability and formula.
 
-Ground passes use passing, vision, and technique; shot quality uses finishing, technique, composure, and strength; tackles use tackling, pace, strength, and composure. A shot is resolved as:
+Ground passes use passing, vision, and technique. Their probability is evaluated at the receiver after physical flight; low passes can also be intercepted by an opposing player inside the configured proximity radius. Shot accuracy uses finishing, technique, composure, and strength to select an in-mouth or wide aim point. Keeper saves use diving, handling, positioning, reflexes, and composure when the flight enters the keeper's reach. A successful save redirects the ball, which remains live for recovery; rebounds are no longer resolved by a second instant probability roll.
 
-1. Shot-quality probability determines whether the effort is on target.
-2. On-target efforts use goalkeeper diving, handling, positioning, reflexes, and composure against shot power, placement, distance, pressure, form/fatigue, and keeper tactics to determine a save.
-3. A saved shot resolves a rebound probability from the nearest attacking support player's finishing, pace, composure, and technique; a won rebound keeps possession, otherwise the goalkeeper holds the ball.
-
-A successful pass travels under simple velocity and linear drag until it reaches its intended teammate. The overlay displays the latest on-target, goalkeeper-save, and rebound probabilities.
-
-The shot stages use the shared sigmoid with configured weights and fatigue/form adjustments:
-
-- `p_on_target = sigmoid((weighted_shooting - 0.50) * sigmoid_slope + shot_zone + tactics - nearby_pressure + form - fatigue)`
-- `p_save = sigmoid((weighted_goalkeeping - 0.50) * goalkeeper_save_slope + distance_bonus - shot_power_penalty - placement_penalty + pressure_bonus + keeper_tactics + form - fatigue)`
-- `p_rebound = clamp(sigmoid((weighted_rebound_skill - 0.50) * rebound_slope + rebound_context + form - fatigue), rebound_min, rebound_max)`
-
-Shot power and placement are weighted skill values from the shooter. The keeper attributes are diving, handling, positioning, reflexes, and composure. Rebound context includes a save bonus and a nearby-support bonus.
-
+The shot and keeper models retain their configured attribute weights and fatigue/form adjustments. Ball flight, contact, goal, and restart events are logged at launch or when they occur, without per-tick log spam.
 ## Data-driven tuning
 
 All current roster templates, formations, match timing, pitch dimensions, physics values, action intervals, tactical cooldown, condition rates, probability weights/modifiers, probability bounds, and breakpoints are in **`data/match_config.json`**. Specifically, the data contains:
@@ -127,6 +120,7 @@ All current roster templates, formations, match timing, pitch dimensions, physic
 - `thresholds` fatigue/shot-zone/rebound/instruction breakpoints; `decision` shot selection and pass-target scoring.
 - `determinism_test` short test half-duration and command tick schedule.
 - `network` UDP port, command lead, tick-beacon/hash/snapshot intervals, snapshot version, maximum pending commands, reconnect enable/grace period, ping interval, and client catch-up limit.
+- `match.ball_flight` pitch-derived scale, FIFA-like goal size, ball/frame radii, gravity, air/ground drag, restitution, shot speeds, keeper interaction bounds, and flight sleep threshold.
 - `decision.pass_selection` nearby/open-space/support-angle/progression weights, role profiles, long-range penalties, clear-chance thresholds, and minimum short-pass buildup.
 - `formations` positions; `player_templates` attributes; `teams` names, colors, rosters, and starting formations.
 
@@ -142,6 +136,7 @@ scripts/network/network_session.gd
 scripts/simulation/match_simulation.gd
 scripts/ui/main_view.gd
 scripts/tests/determinism_test.gd
+scripts/tests/ball_flight_test.gd
 project.godot
 README.md
 ```
@@ -150,7 +145,7 @@ The match-data JSON intentionally contains numeric tuning values and sample rost
 
 ## Determinism test
 
-Run `godot --headless --path . --script res://scripts/tests/determinism_test.gd`. The test checks kickoff role selection and delivery, halftime direction and kickoff ownership, fast ball-boundary crossings, last-touch throw-in/corner/goal-kick decisions, goal/miss/save restart outcomes, dead-ball freezing, restart snapshot round-trips and malformed metadata rejection, selection/hash isolation, stable and stale substitution identities, conflicting tactical commands, and replay determinism. It does not open a network connection.
+Run `godot --headless --path . --script res://scripts/tests/determinism_test.gd` and `godot --headless --path . --script res://scripts/tests/ball_flight_test.gd`. The determinism suite checks kickoff and restart behavior, halftime direction changes, snapshot round-trips, malformed metadata rejection, and replay determinism. The ball-flight suite checks delayed ground-pass reception, goals in both attack directions, post collision, overbar goal-kick classification, and same-seed trajectory samples. Neither test opens a network connection.
 
 ## PVP command and reconnect behavior
 
@@ -158,7 +153,7 @@ The host validates each command when it is received, assigns its sequence and ta
 
 Substitution commands carry the stable outgoing player ID, not a roster index, so later roster changes cannot redirect an already-scheduled request. Pending commands are bounded by `network.maximum_pending_commands`. A sequence gap, late commit, conflicting duplicate hash/beacon, or detected tick/sequence mismatch stops simulation rather than continuing with potentially divergent state.
 
-The authoritative hash includes gameplay state, RNG state, clocks, team tactics/resources, roster/player state, ball and last-touch state, pending restart kind/team/location/taker/receiver, and match phase. It excludes `selected_player_index` (local inspection/input preference), `event_log` and last-action/probability/debug strings (observability only), and `home_formation` (redundant UI setup label; the active formations are hashed per team). Snapshot restore preserves the receiver's local selection. Snapshot schema version is `network.snapshot_version` (currently 5); the protocol digest uses marker `gmn1-lockstep-3`, so older incompatible builds/configurations do not join.
+The authoritative hash includes gameplay state, RNG state, clocks, team tactics/resources, roster/player state, 3D ball position/velocity and flight state, last-touch state, pending restart kind/team/location/taker/receiver, and match phase. It excludes `selected_player_index` (local inspection/input preference), `event_log` and last-action/probability/debug strings (observability only), and `home_formation` (redundant UI setup label; the active formations are hashed per team). Snapshot restore preserves the receiver's local selection. Snapshot schema version is `network.snapshot_version` (currently 6); the protocol digest uses marker `gmn1-lockstep-3`, so older incompatible builds/configurations do not join.
 
 Reconnect snapshots carry the highest sequence already applied at their tick. The replay stream contains each later committed command exactly once, including commands still scheduled in the future. The client verifies sequence continuity, target ticks, the applied sequence and final state hash before the host resumes. An invalid stream stops the session; reconnect is not treated as proven until tested between separate live Godot processes.
 

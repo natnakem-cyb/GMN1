@@ -23,6 +23,14 @@ var teams: Array[FootballTeam] = []
 var rng := RandomNumberGenerator.new()
 var ball_position := Vector2.ZERO
 var ball_velocity := Vector2.ZERO
+var ball_position_3d := Vector3.ZERO
+var ball_velocity_3d := Vector3.ZERO
+var ball_in_flight := false
+var ball_on_ground := true
+var ball_flight_phase := "none"
+var ball_pass_probability := -1.0
+var ball_shooter_id := NO_PLAYER_ID
+var ball_keeper_attempted := false
 var ball_owner: FootballPlayer
 var ball_target: FootballPlayer
 var active := false
@@ -65,6 +73,12 @@ func _ready() -> void:
 	if config.is_empty():
 		set_process(false)
 		return
+	var field_data: Dictionary = config["field"]
+	var ball_data: Dictionary = config["match"]["ball_flight"]
+	ball_data["metres_per_pixel"] = float(field_data["pitch_length_m"]) / float(field_data["width"])
+	ball_data["pixels_per_metre"] = 1.0 / float(ball_data["metres_per_pixel"])
+	ball_data["goal_width_px"] = float(ball_data["goal_width_m"]) * float(ball_data["pixels_per_metre"])
+	ball_data["goal_height_px"] = float(ball_data["goal_height_m"]) * float(ball_data["pixels_per_metre"])
 	rng.seed = int(config.get("seed", 1))
 
 func _process(real_delta: float) -> void:
@@ -121,7 +135,9 @@ func validate_snapshot(snapshot: Variant) -> bool:
 	var required_state_keys: Array[String] = [
 		"tick_count", "elapsed_seconds", "accumulator", "decision_clock", "restart_delay_remaining",
 		"next_kickoff_team", "half_index", "ai_reaction_clock", "event_log", "ball_position",
-		"ball_velocity", "ball_owner_id", "ball_target_id", "last_action", "last_probability",
+		"ball_velocity", "ball_position_3d", "ball_velocity_3d", "ball_in_flight", "ball_on_ground",
+		"ball_flight_phase", "ball_pass_probability", "ball_shooter_id", "ball_keeper_attempted",
+		"ball_owner_id", "ball_target_id", "last_action", "last_probability",
 		"last_formula", "last_shot_on_target_probability", "last_goalkeeper_save_probability",
 		"last_rebound_probability", "preferred_pass_debug", "last_defensive_decision",
 		"last_jockey_log_key", "home_formation", "rng_seed", "rng_state", "active", "finished",
@@ -161,6 +177,15 @@ func validate_snapshot(snapshot: Variant) -> bool:
 		return _reject_snapshot("home_formation is invalid")
 	if not _is_vector_data(state["ball_position"]) or not _is_vector_data(state["ball_velocity"]):
 		return _reject_snapshot("ball vectors are invalid")
+	if not _is_vector3_data(state.get("ball_position_3d")) or not _is_vector3_data(state.get("ball_velocity_3d")):
+		return _reject_snapshot("3D ball vectors are invalid")
+	if typeof(state.get("ball_in_flight")) != TYPE_BOOL or typeof(state.get("ball_on_ground")) != TYPE_BOOL \
+	or typeof(state.get("ball_flight_phase")) != TYPE_STRING \
+	or not ["none", "ground_pass", "shot", "rebound"].has(str(state.get("ball_flight_phase"))) \
+	or not _is_finite_number(state.get("ball_pass_probability")) \
+	or not _is_int_value(state.get("ball_shooter_id")) \
+	or typeof(state.get("ball_keeper_attempted")) != TYPE_BOOL:
+		return _reject_snapshot("3D ball flight metadata is invalid")
 	if not _is_int_value(state["ball_owner_id"]) or not _is_int_value(state["ball_target_id"]):
 		return _reject_snapshot("ball references are invalid")
 	if not state["event_log"] is Array or state["event_log"].size() > 10000:
@@ -273,6 +298,20 @@ func validate_snapshot(snapshot: Variant) -> bool:
 		return _reject_snapshot("ball owner reference is inconsistent")
 	if target_id != -1 and not on_pitch_ids.has(target_id):
 		return _reject_snapshot("ball target reference is invalid")
+	var saved_ball_position := _vector3_from_array(state["ball_position_3d"])
+	var saved_ball_velocity := _vector3_from_array(state["ball_velocity_3d"])
+	if bool(state["ball_in_flight"]) != (str(state["ball_flight_phase"]) != "none") \
+	or absf(float(state["ball_position"][0]) - saved_ball_position.x) > 0.001 \
+	or absf(float(state["ball_position"][1]) - saved_ball_position.y) > 0.001 \
+	or absf(float(state["ball_velocity"][0]) - saved_ball_velocity.x) > 0.001 \
+	or absf(float(state["ball_velocity"][1]) - saved_ball_velocity.y) > 0.001:
+		return _reject_snapshot("2D ball projection disagrees with 3D flight state")
+	if saved_ball_position.z < 0.0 or bool(state["ball_in_flight"]) and owner_id != NO_PLAYER_ID \
+	or str(state["ball_flight_phase"]) == "ground_pass" and (target_id == NO_PLAYER_ID or int(state["ball_shooter_id"]) == NO_PLAYER_ID) \
+	or str(state["ball_flight_phase"]) in ["shot", "rebound"] and int(state["ball_shooter_id"]) == NO_PLAYER_ID \
+	or int(state["ball_shooter_id"]) != NO_PLAYER_ID and not on_pitch_ids.has(int(state["ball_shooter_id"])) \
+	or float(state["ball_pass_probability"]) < -1.0 or float(state["ball_pass_probability"]) > 1.0:
+		return _reject_snapshot("ball flight state is internally inconsistent")
 	if typeof(state["restart_kind"]) != TYPE_STRING or not [
 		RESTART_IN_PLAY, RESTART_KICKOFF, RESTART_THROW_IN, RESTART_CORNER,
 		RESTART_GOAL_KICK, RESTART_FULL_TIME
@@ -405,6 +444,14 @@ func restore_snapshot(snapshot: Dictionary) -> bool:
 		event_log.append(str(event))
 	ball_position = _vector_from_array(state["ball_position"])
 	ball_velocity = _vector_from_array(state["ball_velocity"])
+	ball_position_3d = _vector3_from_array(state["ball_position_3d"])
+	ball_velocity_3d = _vector3_from_array(state["ball_velocity_3d"])
+	ball_in_flight = bool(state["ball_in_flight"])
+	ball_on_ground = bool(state["ball_on_ground"])
+	ball_flight_phase = str(state["ball_flight_phase"])
+	ball_pass_probability = float(state["ball_pass_probability"])
+	ball_shooter_id = int(state["ball_shooter_id"])
+	ball_keeper_attempted = bool(state["ball_keeper_attempted"])
 	ball_owner = _find_player_by_id(int(state["ball_owner_id"]))
 	ball_target = _find_player_by_id(int(state["ball_target_id"]))
 	last_action = str(state["last_action"])
@@ -470,6 +517,14 @@ func _build_state_data(include_event_log: bool, include_presentation: bool) -> D
 		"ai_reaction_clock": ai_reaction_clock,
 		"ball_position": _vector_to_array(ball_position),
 		"ball_velocity": _vector_to_array(ball_velocity),
+		"ball_position_3d": _vector3_to_array(ball_position_3d),
+		"ball_velocity_3d": _vector3_to_array(ball_velocity_3d),
+		"ball_in_flight": ball_in_flight,
+		"ball_on_ground": ball_on_ground,
+		"ball_flight_phase": ball_flight_phase,
+		"ball_pass_probability": ball_pass_probability,
+		"ball_shooter_id": ball_shooter_id,
+		"ball_keeper_attempted": ball_keeper_attempted,
 		"ball_owner_id": _player_id_or_sentinel(ball_owner),
 		"ball_target_id": _player_id_or_sentinel(ball_target),
 		"rng_seed": rng.seed,
@@ -639,6 +694,18 @@ func _vector_from_array(value: Array) -> Vector2:
 		return Vector2.ZERO
 	return Vector2(float(value[0]), float(value[1]))
 
+func _vector3_to_array(value: Vector3) -> Array[float]:
+	return [value.x, value.y, value.z]
+
+func _vector3_from_array(value: Array) -> Vector3:
+	if value.size() != 3:
+		return Vector3.ZERO
+	return Vector3(float(value[0]), float(value[1]), float(value[2]))
+
+func _is_vector3_data(value: Variant) -> bool:
+	return value is Array and value.size() == 3 and _is_finite_number(value[0]) \
+		and _is_finite_number(value[1]) and _is_finite_number(value[2])
+
 func _player_id_or_sentinel(player: FootballPlayer) -> int:
 	return player.id if player != null else -1
 
@@ -727,6 +794,16 @@ func setup_match(chosen_formation: String) -> bool:
 	home_formation = chosen_formation
 	ball_owner = null
 	ball_target = null
+	ball_position = Vector2.ZERO
+	ball_position_3d = Vector3.ZERO
+	ball_velocity = Vector2.ZERO
+	ball_velocity_3d = Vector3.ZERO
+	ball_in_flight = false
+	ball_on_ground = true
+	ball_flight_phase = "none"
+	ball_pass_probability = -1.0
+	ball_shooter_id = NO_PLAYER_ID
+	ball_keeper_attempted = false
 	teams.clear()
 	for team_index in range(config["teams"].size()):
 		var team_data: Dictionary = config["teams"][team_index]
@@ -834,6 +911,8 @@ func substitute_player(team_index: int, outgoing_index: int, bench_index: int = 
 		ball_owner = incoming
 	if ball_target == outgoing:
 		ball_target = incoming
+	if ball_shooter_id == outgoing.id:
+		ball_shooter_id = incoming.id
 	if restart_pending:
 		if restart_taker_id == outgoing.id:
 			restart_taker_id = incoming.id
@@ -1081,13 +1160,18 @@ func _tick(seconds: float) -> void:
 		)
 		ball_owner.carry_distance += maxf(0.0, (ball_owner.position.x - previous_position.x) * attack_direction)
 		ball_position = ball_owner.position
+		ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
 	for team in teams:
 		for player in team.players:
 			var progress_interval := maxi(1, int(config["match"]["box_runs"]["progress_log_interval_ticks"]))
 			if player.box_run_active and tick_count % progress_interval == 0:
 				_log_box_run_progress(team, player)
+	var ball_was_in_flight := ball_in_flight
 	_advance_ball(seconds)
-	if decision_clock >= float(config["match"]["decision_interval_seconds"]):
+	var just_received_ball := ball_was_in_flight and ball_owner != null
+	if just_received_ball:
+		decision_clock = 0.0
+	if decision_clock >= float(config["match"]["decision_interval_seconds"]) and not just_received_ball:
 		decision_clock = 0.0
 		_resolve_next_action()
 	if half_index == 0 and elapsed_seconds >= float(config["match"]["half_duration_seconds"]):
@@ -1132,6 +1216,13 @@ func _finish_full_time() -> void:
 	ball_owner = null
 	ball_target = null
 	ball_velocity = Vector2.ZERO
+	ball_velocity_3d = Vector3.ZERO
+	ball_in_flight = false
+	ball_on_ground = true
+	ball_flight_phase = "none"
+	ball_pass_probability = -1.0
+	ball_shooter_id = NO_PLAYER_ID
+	ball_keeper_attempted = false
 	last_action = "Full time"
 	event_log.append("Full time")
 	match_finished.emit(teams[0].score, teams[1].score)
@@ -1158,7 +1249,7 @@ func _update_ai_manager() -> void:
 		event_log.append("AI changes game plan to %s" % desired_plan)
 
 func _resolve_next_action() -> void:
-	if restart_pending or finished:
+	if restart_pending or finished or ball_in_flight:
 		return
 	if ball_target != null:
 		return
@@ -1180,7 +1271,7 @@ func _resolve_next_action() -> void:
 		_resolve_pass(ball_owner, owner_team)
 
 func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
-	if restart_pending or finished:
+	if restart_pending or finished or ball_in_flight:
 		return
 	var receiver := _choose_receiver(player, team)
 	if receiver == null:
@@ -1192,27 +1283,34 @@ func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
 		range_modifier *= float(config["decision"]["possession_pass_range_factor"])
 	if team.has_instruction("direct_long_balls"):
 		range_modifier += float(config["probability"]["instructions"]["direct_long_balls"]["range_modifier"])
-	var channel_modifier := _channel_pass_modifier(team, receiver)
-	range_modifier += channel_modifier
+	range_modifier += _channel_pass_modifier(team, receiver)
 	var attributes: Dictionary = config["probability"]["action_weights"]["pass"]
-	var probability := _calculate_probability(player, attributes, tactical + range_modifier)
+	ball_pass_probability = _calculate_probability(player, attributes, tactical + range_modifier)
 	var formula := _formula_description(player, attributes, tactical + range_modifier)
-	var success := rng.randf() < probability
-	player.record_action(success, float(config["match"]["condition_form_change_per_success"]))
-	_set_last_action("%s %s → %s: %s" % [team.team_name, player.player_name, receiver.player_name, "complete" if success else "intercepted"], probability, formula)
-	if success:
-		ball_owner = null
-		ball_target = receiver
-		ball_position = player.position
-		last_touch_team_index = player.team_index
-		last_touch_player_id = player.id
-		var direction := (receiver.position - player.position).normalized()
-		ball_velocity = direction * float(config["match"]["pass_ball_speed"])
-	else:
-		_set_possession(_nearest_opponent_to_ball(teams[1 - player.team_index]))
+	ball_owner = null
+	ball_target = receiver
+	ball_position = player.position
+	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
+	var direction := receiver.position - player.position
+	if direction.length_squared() < 0.001:
+		direction = Vector2.RIGHT
+	var flat_direction := direction.normalized()
+	ball_velocity_3d = Vector3(flat_direction.x, flat_direction.y, 0.0) * float(config["match"]["pass_ball_speed"])
+	ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
+	ball_in_flight = true
+	ball_on_ground = true
+	ball_flight_phase = "ground_pass"
+	ball_shooter_id = player.id
+	ball_keeper_attempted = false
+	last_touch_team_index = player.team_index
+	last_touch_player_id = player.id
+	var launch_text := "[Ball] launch pass %s (#%d) -> %s (#%d), from (%.1f, %.1f), speed %.1f px/s, reception p=%.3f" % [player.player_name, player.id, receiver.player_name, receiver.id, ball_position.x, ball_position.y, ball_velocity_3d.length(), ball_pass_probability]
+	event_log.append(launch_text)
+	print(launch_text)
+	_set_last_action("%s pass to %s in flight" % [player.player_name, receiver.player_name], ball_pass_probability, formula)
 
 func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
-	if restart_pending or finished:
+	if restart_pending or finished or ball_in_flight:
 		return
 	var shooter_position := player.position
 	if player.shot_cooldown_active:
@@ -1225,158 +1323,57 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 	var shooter_attack_x := _attack_progress_x(shooter_position.x, team)
 	if player.box_run_active:
 		var run_distance := shooter_position.distance_to(player.box_run_target)
-		var run_status := "run complete" if run_distance <= float(config["match"]["box_runs"]["arrival_radius"]) \
-			else "run waived: already inside/edge"
-		var inside_box := _is_inside_position_shot_box(shooter_position, team, 0.0)
-		print("[Shot] %s box-run shot at real-x=%.1f (inside_box=%s, %s, remaining=%.1fpx)." % [
-			player.player_name, shooter_position.x, str(inside_box), run_status, run_distance
-		])
-	print("[Shot] %s decision at real-x=%.1f (attack %.3f, tactical-target-x=%.1f)." % [
-		player.player_name, shooter_position.x, shooter_attack_x, player.tactical_position.x
-	])
+		print("[Shot] %s box-run shot at real-x=%.1f (remaining=%.1fpx)." % [player.player_name, shooter_position.x, run_distance])
+	print("[Shot] %s decision at real-x=%.1f (attack %.3f, tactical-target-x=%.1f)." % [player.player_name, shooter_position.x, shooter_attack_x, player.tactical_position.x])
 	player.shot_cooldown_active = true
 	player.shot_cooldown_opposition_ticks = 0
 	_clear_box_runs(team, true)
 	_finish_pass_sequence(team, "shot")
 	last_rebound_probability = -1.0
-	var goal_x := float(config["field"]["width"]) if team.attacks_right else 0.0
+	var field_data: Dictionary = config["field"]
+	var ball_data: Dictionary = config["match"]["ball_flight"]
+	var goal_x := float(field_data["width"]) if team.attacks_right else 0.0
 	var distance_to_goal := absf(goal_x - shooter_position.x)
-	var attack_x := shooter_position.x / float(config["field"]["width"])
-	if not team.attacks_right:
-		attack_x = 1.0 - attack_x
+	var attack_x := _attack_progress_x(shooter_position.x, team)
 	var nearest_defender := _nearest_opponent_to_position(shooter_position, teams[1 - player.team_index])
 	if nearest_defender == null:
-		push_error("Shot resolution failed: defending team has no outfield players.")
 		return
 	var pressure_distance := nearest_defender.position.distance_to(shooter_position)
 	var shot_context := _shot_context_breakdown(shooter_position, team, distance_to_goal, attack_x, pressure_distance)
-	var pressure_factor := float(shot_context["pressure_factor"])
 	var modifier := float(shot_context["total"])
-	var context_description := "%s | shooter x=%.1f (attack %.3f), inside_box=%s" % [
-		_shot_context_description(shot_context),
-		shooter_position.x,
-		attack_x,
-		str(bool(shot_context["inside_box"]))
-	]
 	var attributes: Dictionary = config["probability"]["action_weights"]["shot"]
 	var shot_probability := _calculate_probability(player, attributes, modifier)
 	last_shot_on_target_probability = shot_probability
-	var shot_power_weights: Dictionary = config["probability"]["shot_power_attribute_weights"]
-	var placement_weights: Dictionary = config["probability"]["shot_placement_attribute_weights"]
-	var shot_power := _weighted_attribute(player, shot_power_weights)
-	var shot_placement := _weighted_attribute(player, placement_weights)
+	var shot_power := _weighted_attribute(player, config["probability"]["shot_power_attribute_weights"])
+	var shot_placement := _weighted_attribute(player, config["probability"]["shot_placement_attribute_weights"])
 	var on_target := rng.randf() < shot_probability
 	player.record_action(on_target, float(config["match"]["condition_form_change_per_success"]))
-	if not on_target:
-		last_goalkeeper_save_probability = -1.0
-		var miss_formula := "%s | %s" % [
-			_formula_description(player, attributes, modifier),
-			context_description
-		]
-		_set_last_action("%s %s misses the target (wide)" % [team.team_name, player.player_name], shot_probability, miss_formula)
-		_classify_out_of_bounds(
-			"right_goal_line" if goal_x > float(config["field"]["width"]) * 0.5 else "left_goal_line",
-			Vector2(goal_x, lerpf(float(config["field"]["height"]) * 0.5, shooter_position.y, shot_placement))
-		)
-		return
-	var goalkeeper := _goalkeeper(teams[1 - player.team_index])
-	if goalkeeper == null:
-		push_error("Shot resolution failed: defending team has no goalkeeper.")
-		return
-	var gk_weights: Dictionary = config["probability"]["action_weights"]["goalkeeper"]
-	var gk_distance_modifier := distance_to_goal * float(config["probability"]["goalkeeper_distance_scale"])
-	var gk_power_modifier := -shot_power * float(config["probability"]["goalkeeper_power_penalty"])
-	var gk_placement_modifier := -shot_placement * float(config["probability"]["goalkeeper_placement_penalty"])
-	var gk_pressure_modifier := pressure_factor * float(config["probability"]["goalkeeper_pressure_bonus"])
-	var gk_tactical := float(config["probability"]["goalkeeper_tactical_modifiers"]["mentality"][teams[goalkeeper.team_index].mentality])
-	gk_tactical += float(config["probability"]["goalkeeper_tactical_modifiers"]["game_plan"][teams[goalkeeper.team_index].game_plan])
-	if teams[goalkeeper.team_index].has_instruction("press_pivot") and player.number == int(config["probability"]["instructions"]["press_pivot"]["pivot_shirt_number"]):
-		gk_tactical += float(config["probability"]["instructions"]["press_pivot"]["save_pressure_bonus"])
-	var gk_modifier := gk_distance_modifier + gk_power_modifier + gk_placement_modifier + gk_pressure_modifier + gk_tactical
-	var save_probability := _calculate_probability_with_slope(
-		goalkeeper, gk_weights, gk_modifier,
-		float(config["probability"]["goalkeeper_save_slope"]),
-		float(config["match"]["minimum_probability"]),
-		float(config["match"]["maximum_probability"])
-	)
-	last_goalkeeper_save_probability = save_probability
-	var saved := rng.randf() < save_probability
-	var goal_center_y := float(config["field"]["height"]) * 0.5
-	ball_position = Vector2(goal_x, lerpf(goal_center_y, shooter_position.y, shot_placement))
-	var shot_formula := "%s | %s" % [
-		_formula_description(player, attributes, modifier),
-		context_description
-	]
-	var keeper_formula := _formula_description_with_slope(
-		goalkeeper, gk_weights, gk_modifier, float(config["probability"]["goalkeeper_save_slope"])
-	)
-	if saved:
-		last_touch_team_index = goalkeeper.team_index
-		last_touch_player_id = goalkeeper.id
-		var corner_probability := float(config["match"]["restarts"]["saved_shot_corner_probability"])
-		if rng.randf() < corner_probability:
-			var corner_y := 0.0 if shooter_position.y < goal_center_y else float(config["field"]["height"])
-			_set_last_action(
-				"%s shot saved by %s and deflected out for a corner" % [player.player_name, goalkeeper.player_name],
-				shot_probability,
-				"%s | GK: %s | saved-shot corner probability %.3f" % [
-					shot_formula, keeper_formula, corner_probability
-				]
-			)
-			_classify_out_of_bounds(
-				"right_goal_line" if goal_x > float(config["field"]["width"]) * 0.5 else "left_goal_line",
-				Vector2(goal_x, corner_y)
-			)
-			return
-		var support_player := _nearest_outfield_player_to_position(ball_position, team)
-		var support_modifier := float(config["probability"]["rebound_base_modifier"]) + float(config["probability"]["rebound_save_modifier"])
-		if support_player != null and support_player.position.distance_to(ball_position) <= float(config["probability"]["rebound_support_distance"]):
-			support_modifier += float(config["probability"]["rebound_support_bonus"])
-		var rebound_weights: Dictionary = config["probability"]["action_weights"]["rebound"]
-		var rebound_probability := _calculate_probability_with_slope(
-			support_player if support_player != null else player,
-			rebound_weights, support_modifier,
-			float(config["probability"]["rebound_slope"]),
-			float(config["thresholds"]["rebound_minimum_probability"]),
-			float(config["thresholds"]["rebound_maximum_probability"])
-		)
-		last_rebound_probability = rebound_probability
-		var rebound_won := rng.randf() < rebound_probability
-		var rebound_formula := _formula_description_with_slope(
-			support_player if support_player != null else player,
-			rebound_weights, support_modifier, float(config["probability"]["rebound_slope"])
-		)
-		if rebound_won and support_player != null:
-			_set_possession(support_player)
-			if support_player != player:
-				player.shot_cooldown_active = false
-				player.shot_cooldown_opposition_ticks = 0
-			_set_last_action("%s shot on target (%.3f); saved by %s (%.3f); rebound to %s (%.3f)" % [
-				player.player_name, shot_probability, goalkeeper.player_name, save_probability,
-				support_player.player_name, rebound_probability
-			], shot_probability, "%s | GK: %s | Rebound: %s" % [shot_formula, keeper_formula, rebound_formula])
-		else:
-			_set_possession(goalkeeper)
-			_set_last_action("%s shot on target (%.3f); saved by %s (%.3f); keeper holds (rebound %.3f)" % [
-				player.player_name, shot_probability, goalkeeper.player_name, save_probability, rebound_probability
-			], shot_probability, "%s | GK: %s | Rebound: %s" % [shot_formula, keeper_formula, rebound_formula])
+	var goal_center_y := float(field_data["height"]) * 0.5
+	var goal_half_width := float(ball_data["goal_width_px"]) * 0.5
+	var aim_y := goal_center_y + (shooter_position.y - goal_center_y) * clampf(shot_placement, 0.0, 1.0) * 0.25
+	if on_target:
+		aim_y += float(rng.randi_range(-1, 1)) * goal_half_width * 0.48
 	else:
-		team.score += 1
-		next_kickoff_team = 1 - player.team_index
-		_set_last_action("%s %s scores! (on target %.3f; keeper save %.3f)" % [
-			team.team_name, player.player_name, shot_probability, save_probability
-		], shot_probability, "%s | GK: %s" % [shot_formula, keeper_formula])
-		ball_position = Vector2(goal_x, float(config["field"]["height"]) * 0.5)
-		ball_velocity = Vector2.ZERO
-		ball_owner = null
-		ball_target = null
-		_begin_restart(
-			RESTART_KICKOFF,
-			next_kickoff_team,
-			Vector2(float(config["field"]["width"]) * 0.5, float(config["field"]["height"]) * 0.5),
-			float(config["match"]["goal_reset_seconds"])
-		)
-
+		aim_y = goal_center_y + (1.0 if rng.randi_range(0, 1) == 0 else -1.0) * (goal_half_width + float(ball_data["ball_radius_px"]) * 3.0)
+	var flat_direction := Vector2(goal_x - shooter_position.x, aim_y - shooter_position.y).normalized()
+	var speed := lerpf(float(ball_data["shot_speed_min_px_s"]), float(ball_data["shot_speed_max_px_s"]), clampf((shot_power + player.get_attribute("finishing") / 100.0) * 0.5, 0.0, 1.0))
+	ball_owner = null
+	ball_target = null
+	ball_position = shooter_position
+	ball_position_3d = Vector3(shooter_position.x, shooter_position.y, float(ball_data["ball_radius_px"]))
+	ball_velocity_3d = Vector3(flat_direction.x * speed, flat_direction.y * speed, float(ball_data["shot_vertical_speed_px_s"]))
+	ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
+	ball_in_flight = true
+	ball_on_ground = false
+	ball_flight_phase = "shot"
+	ball_pass_probability = -1.0
+	ball_shooter_id = player.id
+	ball_keeper_attempted = false
+	last_goalkeeper_save_probability = -1.0
+	var launch_text := "[Ball] launch shot %s (#%d), from (%.1f, %.1f, %.1f) toward (%.1f, %.1f), speed %.1f px/s, vz %.1f px/s, aim=%s" % [player.player_name, player.id, ball_position_3d.x, ball_position_3d.y, ball_position_3d.z, goal_x, aim_y, ball_velocity_3d.length(), ball_velocity_3d.z, "inside" if on_target else "wide"]
+	event_log.append(launch_text)
+	print(launch_text)
+	_set_last_action("%s %s shot in flight (%s; on-target model %.3f)" % [team.team_name, player.player_name, "on target" if on_target else "wide", shot_probability], shot_probability, _formula_description(player, attributes, modifier))
 func _shot_context_breakdown(
 	shooter_position: Vector2,
 	team: FootballTeam,
@@ -1623,21 +1620,237 @@ func _formula_description_with_slope(player: FootballPlayer, weights: Dictionary
 	]
 
 func _advance_ball(seconds: float) -> void:
-	if restart_pending or ball_target == null:
+	if restart_pending or not ball_in_flight:
 		return
-	var previous_position := ball_position
-	var drag := maxf(0.0, 1.0 - float(config["match"]["ball_drag_per_second"]) * seconds)
-	var spin := float(config["match"]["ball_spin_influence"])
-	ball_velocity += Vector2(-ball_velocity.y, ball_velocity.x) * spin * seconds
-	ball_velocity *= drag
-	ball_position += ball_velocity * seconds
-	var crossing := _find_boundary_crossing(previous_position, ball_position)
-	if not crossing.is_empty():
-		_classify_out_of_bounds(str(crossing["boundary"]), crossing["position"])
-		return
-	if ball_position.distance_to(ball_target.position) <= float(config["match"]["pass_arrival_radius"]) or ball_velocity.length() < float(config["match"]["ball_minimum_speed"]):
-		_set_possession(ball_target)
+	var ball_data: Dictionary = config["match"]["ball_flight"]
+	var radius := float(ball_data["ball_radius_px"])
+	var substep_distance := maxf(0.5, float(ball_data["substep_distance_px"]))
+	var substeps := maxi(1, int(ceil(ball_velocity_3d.length() * seconds / substep_distance)))
+	var sub_dt := seconds / float(substeps)
+	for _substep in range(substeps):
+		if not ball_in_flight or restart_pending:
+			return
+		var previous := ball_position_3d
+		if ball_position_3d.z > radius or ball_velocity_3d.z > 0.0:
+			ball_velocity_3d.z -= float(ball_data["gravity_z_px_s2"]) * sub_dt
+		var air_drag := maxf(0.0, 1.0 - float(ball_data["air_drag_per_second"]) * sub_dt)
+		ball_velocity_3d *= air_drag
+		ball_position_3d += ball_velocity_3d * sub_dt
+		if ball_position_3d.z <= radius:
+			ball_position_3d.z = radius
+			if absf(ball_velocity_3d.z) > 5.0:
+				ball_velocity_3d.z = -ball_velocity_3d.z * float(ball_data["ground_restitution"])
+				ball_velocity_3d.x *= maxf(0.0, 1.0 - float(ball_data["ground_friction"]) * sub_dt)
+				ball_velocity_3d.y *= maxf(0.0, 1.0 - float(ball_data["ground_friction"]) * sub_dt)
+				ball_on_ground = false
+			else:
+				ball_velocity_3d.z = 0.0
+				ball_on_ground = true
+				ball_velocity_3d.x *= maxf(0.0, 1.0 - float(ball_data["ground_friction"]) * sub_dt)
+				ball_velocity_3d.y *= maxf(0.0, 1.0 - float(ball_data["ground_friction"]) * sub_dt)
+		ball_position = Vector2(ball_position_3d.x, ball_position_3d.y)
+		ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
+		if ball_flight_phase in ["shot", "rebound"]:
+			if _resolve_frame_collision():
+				ball_position = Vector2(ball_position_3d.x, ball_position_3d.y)
+				ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
+			if _crossed_goal_volume(previous, ball_position_3d):
+				_score_flight_goal()
+				return
+			_try_keeper_interaction()
+			if restart_pending:
+				return
+		if ball_flight_phase == "ground_pass" and _try_pass_interception():
+			return
+		var crossing := _find_boundary_crossing(Vector2(previous.x, previous.y), ball_position)
+		if not crossing.is_empty():
+			_classify_out_of_bounds(str(crossing["boundary"]), crossing["position"])
+			return
+		if ball_flight_phase == "ground_pass" and ball_target != null \
+		and ball_position.distance_to(ball_target.position) <= float(config["match"]["pass_arrival_radius"]) \
+		and ball_position_3d.z <= radius + 2.0:
+			_complete_flight_pass()
+			return
+		if ball_on_ground and ball_velocity_3d.length() < float(ball_data["min_speed_sleep_px_s"]):
+			ball_in_flight = false
+			ball_flight_phase = "none"
+			ball_velocity_3d = Vector3.ZERO
+			ball_velocity = Vector2.ZERO
+			if ball_target != null:
+				_complete_flight_pass()
+			else:
+				var nearest := _nearest_player(ball_position)
+				if nearest != null:
+					_set_possession(nearest)
+			return
 
+func _complete_flight_pass() -> void:
+	if ball_target == null:
+		return
+	var passer := _find_player_by_id(ball_shooter_id)
+	var receiver := ball_target
+	var completed := rng.randf() < ball_pass_probability
+	if passer != null:
+		passer.record_action(completed, float(config["match"]["condition_form_change_per_success"]))
+	var team_name := teams[receiver.team_index].team_name
+	if completed:
+		_set_last_action("%s pass complete to %s" % [team_name, receiver.player_name], ball_pass_probability, "Pass resolved at reception after physical ball flight.")
+		_set_possession(receiver)
+	else:
+		var interceptor := _nearest_opponent_to_position(ball_position, teams[1 - receiver.team_index])
+		_set_last_action("%s pass intercepted before %s could control" % [team_name, receiver.player_name], ball_pass_probability, "Pass resolved at reception after physical ball flight.")
+		if interceptor != null:
+			_set_possession(interceptor)
+		else:
+			_set_possession(receiver)
+
+func _try_pass_interception() -> bool:
+	if ball_target == null or ball_position_3d.z > float(config["match"]["ball_flight"]["ball_radius_px"]) + 4.0:
+		return false
+	var defenders: FootballTeam = teams[1 - ball_target.team_index]
+	var radius := float(config["match"]["ball_flight"]["interception_radius_px"])
+	for defender in defenders.players:
+		if defender.tactical_role == "GK":
+			continue
+		if defender.position.distance_to(ball_position) <= radius:
+			var text := "[Ball] %s (#%d) intercepts pass in flight at (%.1f, %.1f, %.1f)" % [defender.player_name, defender.id, ball_position_3d.x, ball_position_3d.y, ball_position_3d.z]
+			event_log.append(text)
+			print(text)
+			_set_last_action("Pass intercepted by %s" % defender.player_name, ball_pass_probability, "Deterministic proximity interception inside configured radius.")
+			_set_possession(defender)
+			return true
+	return false
+
+func _resolve_frame_collision() -> bool:
+	var field: Dictionary = config["field"]
+	var ball_data: Dictionary = config["match"]["ball_flight"]
+	var center_y := float(field["height"]) * 0.5
+	var half_width := float(ball_data["goal_width_px"]) * 0.5
+	var goal_height := float(ball_data["goal_height_px"])
+	var combined_radius := float(ball_data["ball_radius_px"]) + float(ball_data["post_radius_px"])
+	for side in [0, 1]:
+		var goal_x := 0.0 if side == 0 else float(field["width"])
+		for post_y in [center_y - half_width, center_y + half_width]:
+			var closest := Vector3(goal_x, post_y, clampf(ball_position_3d.z, 0.0, goal_height))
+			if ball_position_3d.distance_to(closest) <= combined_radius:
+				_reflect_from_frame(closest, combined_radius)
+				return true
+		var bar_radius := float(ball_data["ball_radius_px"]) + float(ball_data["crossbar_radius_px"])
+		if ball_position_3d.z >= goal_height - bar_radius and ball_position_3d.z <= goal_height + bar_radius \
+		and absf(ball_position_3d.x - goal_x) <= bar_radius \
+		and absf(ball_position_3d.y - center_y) <= half_width + bar_radius:
+			var closest_bar := Vector3(goal_x, clampf(ball_position_3d.y, center_y - half_width, center_y + half_width), goal_height)
+			_reflect_from_frame(closest_bar, bar_radius)
+			return true
+	return false
+
+func _reflect_from_frame(contact: Vector3, combined_radius: float) -> void:
+	var normal := (ball_position_3d - contact).normalized()
+	if normal.length_squared() < 0.001:
+		normal = Vector3.LEFT if ball_velocity_3d.x > 0.0 else Vector3.RIGHT
+	var toward_frame := ball_velocity_3d.dot(normal)
+	if toward_frame < 0.0:
+		ball_velocity_3d -= normal * (1.45 * toward_frame)
+	ball_position_3d = contact + normal * combined_radius
+	ball_flight_phase = "rebound"
+	var text := "[Ball] post/crossbar hit at (%.1f, %.1f, %.1f)" % [contact.x, contact.y, contact.z]
+	event_log.append(text)
+	print(text)
+
+func _crossed_goal_volume(previous: Vector3, current: Vector3) -> bool:
+	if ball_flight_phase not in ["shot", "rebound"]:
+		return false
+	var shooter := _find_player_by_id(ball_shooter_id)
+	if shooter == null:
+		return false
+	var field: Dictionary = config["field"]
+	var ball_data: Dictionary = config["match"]["ball_flight"]
+	var direction := 1.0 if teams[shooter.team_index].attacks_right else -1.0
+	var goal_x := float(field["width"]) if direction > 0.0 else 0.0
+	var plane_x := goal_x + direction * float(ball_data["ball_radius_px"])
+	if (previous.x - plane_x) * direction >= 0.0 or (current.x - plane_x) * direction < 0.0:
+		return false
+	var t := clampf((plane_x - previous.x) / (current.x - previous.x), 0.0, 1.0)
+	var crossing := previous.lerp(current, t)
+	var center_y := float(field["height"]) * 0.5
+	return absf(crossing.y - center_y) + float(ball_data["ball_radius_px"]) <= float(ball_data["goal_width_px"]) * 0.5 \
+		and crossing.z + float(ball_data["ball_radius_px"]) <= float(ball_data["goal_height_px"])
+
+func _score_flight_goal() -> void:
+	var scorer := _find_player_by_id(ball_shooter_id)
+	if scorer == null:
+		return
+	var scoring_team_index := scorer.team_index
+	var scoring_team := teams[scoring_team_index]
+	scoring_team.score += 1
+	next_kickoff_team = 1 - scoring_team_index
+	var scorer_name := scorer.player_name if scorer != null else "Unknown"
+	var text := "[Ball] goal volume entered by %s at (%.1f, %.1f, %.1f)" % [scorer_name, ball_position_3d.x, ball_position_3d.y, ball_position_3d.z]
+	event_log.append(text)
+	print(text)
+	_set_last_action("%s %s scores!" % [scoring_team.team_name, scorer_name], last_shot_on_target_probability, "Ball fully crossed the goal plane inside the post and crossbar volume.")
+	ball_position = Vector2(float(config["field"]["width"]) if teams[scoring_team_index].attacks_right else 0.0, float(config["field"]["height"]) * 0.5)
+	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
+	ball_velocity = Vector2.ZERO
+	ball_velocity_3d = Vector3.ZERO
+	ball_in_flight = false
+	ball_on_ground = true
+	ball_flight_phase = "none"
+	ball_owner = null
+	ball_target = null
+	_begin_restart(RESTART_KICKOFF, next_kickoff_team, Vector2(float(config["field"]["width"]) * 0.5, float(config["field"]["height"]) * 0.5), float(config["match"]["goal_reset_seconds"]))
+
+func _try_keeper_interaction() -> void:
+	if ball_keeper_attempted or ball_flight_phase not in ["shot", "rebound"]:
+		return
+	var shooter := _find_player_by_id(ball_shooter_id)
+	if shooter == null:
+		return
+	var keeper := _goalkeeper(teams[1 - shooter.team_index])
+	if keeper == null:
+		return
+	var ball_data: Dictionary = config["match"]["ball_flight"]
+	if ball_position_3d.z > float(ball_data["keeper_reachable_height_m"]) / float(ball_data["metres_per_pixel"]) \
+	or keeper.position.distance_to(ball_position) > float(ball_data["keeper_interaction_radius_px"]):
+		return
+	var own_goal_x := 0.0 if teams[keeper.team_index].attacks_right else float(config["field"]["width"])
+	if absf(keeper.position.x - own_goal_x) > float(ball_data["keeper_goal_approach_px"]):
+		return
+	ball_keeper_attempted = true
+	var gk_weights: Dictionary = config["probability"]["action_weights"]["goalkeeper"]
+	var shooter_team: FootballTeam = teams[shooter.team_index]
+	var shot_distance := absf(own_goal_x - shooter.position.x)
+	var nearest_defender := _nearest_opponent_to_position(shooter.position, teams[keeper.team_index])
+	var pressure_distance := nearest_defender.position.distance_to(shooter.position) \
+		if nearest_defender != null else float(config["field"]["width"])
+	var shot_context := _shot_context_breakdown(
+		shooter.position, shooter_team, shot_distance,
+		_attack_progress_x(shooter.position.x, shooter_team), pressure_distance
+	)
+	var shot_power := _weighted_attribute(shooter, config["probability"]["shot_power_attribute_weights"])
+	var shot_placement := _weighted_attribute(shooter, config["probability"]["shot_placement_attribute_weights"])
+	var modifier := shot_distance * float(config["probability"]["goalkeeper_distance_scale"])
+	modifier -= shot_power * float(config["probability"]["goalkeeper_power_penalty"])
+	modifier -= shot_placement * float(config["probability"]["goalkeeper_placement_penalty"])
+	modifier += float(shot_context["pressure_factor"]) * float(config["probability"]["goalkeeper_pressure_bonus"])
+	modifier += float(config["probability"]["goalkeeper_tactical_modifiers"]["mentality"][teams[keeper.team_index].mentality])
+	modifier += float(config["probability"]["goalkeeper_tactical_modifiers"]["game_plan"][teams[keeper.team_index].game_plan])
+	if teams[keeper.team_index].has_instruction("press_pivot") \
+	and shooter.number == int(config["probability"]["instructions"]["press_pivot"]["pivot_shirt_number"]):
+		modifier += float(config["probability"]["instructions"]["press_pivot"]["save_pressure_bonus"])
+	last_goalkeeper_save_probability = _calculate_probability_with_slope(keeper, gk_weights, modifier, float(config["probability"]["goalkeeper_save_slope"]), float(config["match"]["minimum_probability"]), float(config["match"]["maximum_probability"]))
+	if rng.randf() < last_goalkeeper_save_probability:
+		var inward := 1.0 if own_goal_x == 0.0 else -1.0
+		var lateral := signf(ball_position_3d.y - keeper.position.y)
+		ball_velocity_3d = Vector3(inward * float(ball_data["save_impulse_px_s"]), lateral * float(ball_data["save_impulse_px_s"]) * 0.3, float(ball_data["save_vertical_impulse_px_s"]))
+		ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
+		ball_flight_phase = "rebound"
+		last_touch_team_index = keeper.team_index
+		last_touch_player_id = keeper.id
+		_set_last_action("Shot saved by %s (p=%.3f); ball deflected" % [keeper.player_name, last_goalkeeper_save_probability], last_goalkeeper_save_probability, "Keeper contact applied a deterministic directional impulse; no instant rebound roll.")
+		var text := "[Ball] keeper interaction %s at (%.1f, %.1f, %.1f) -> save impulse" % [keeper.player_name, ball_position_3d.x, ball_position_3d.y, ball_position_3d.z]
+		event_log.append(text)
+		print(text)
 func _tick_shot_cooldowns() -> void:
 	var opposition_ticks_required := int(config["match"]["shot_cooldown_opposition_ticks"])
 	for team in teams:
@@ -1666,6 +1879,13 @@ func _set_possession(player: FootballPlayer) -> void:
 		ball_owner = null
 		ball_target = null
 		ball_velocity = Vector2.ZERO
+		ball_velocity_3d = Vector3.ZERO
+		ball_in_flight = false
+		ball_on_ground = true
+		ball_flight_phase = "none"
+		ball_pass_probability = -1.0
+		ball_shooter_id = NO_PLAYER_ID
+		ball_keeper_attempted = false
 		return
 	var previous_team_index := -1
 	if ball_owner != null:
@@ -1689,7 +1909,16 @@ func _set_possession(player: FootballPlayer) -> void:
 	ball_owner = player
 	ball_target = null
 	ball_velocity = Vector2.ZERO
+	ball_velocity_3d = Vector3.ZERO
+	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
+	ball_in_flight = false
+	ball_on_ground = true
+	ball_flight_phase = "none"
+	ball_pass_probability = -1.0
+	ball_shooter_id = NO_PLAYER_ID
+	ball_keeper_attempted = false
 	ball_position = player.position
+	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
 	last_touch_team_index = player.team_index
 	last_touch_player_id = player.id
 	preferred_pass_debug = "%s possession: waiting for pass selection" % teams[player.team_index].team_name
@@ -2320,6 +2549,14 @@ func _begin_restart(
 	restart_delay_remaining = maxf(0.0, delay_seconds)
 	ball_position = legal_position
 	ball_velocity = Vector2.ZERO
+	ball_position_3d = Vector3(legal_position.x, legal_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
+	ball_velocity_3d = Vector3.ZERO
+	ball_in_flight = false
+	ball_on_ground = true
+	ball_flight_phase = "none"
+	ball_pass_probability = -1.0
+	ball_shooter_id = NO_PLAYER_ID
+	ball_keeper_attempted = false
 	ball_owner = null
 	ball_target = null
 	decision_clock = 0.0
@@ -2361,10 +2598,22 @@ func _execute_pending_restart() -> bool:
 	ball_position = from_position
 	ball_owner = null
 	ball_target = receiver
+	ball_position_3d = Vector3(from_position.x, from_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
+	ball_in_flight = true
+	ball_on_ground = true
+	ball_flight_phase = "ground_pass"
+	ball_pass_probability = 1.0
+	ball_shooter_id = taker.id
+	ball_keeper_attempted = false
 	var direction := receiver.position - from_position
 	if direction.length_squared() < 1.0:
 		direction = Vector2(1.0 if teams[executed_team].attacks_right else -1.0, 0.0)
-	ball_velocity = direction.normalized() * float(config["match"]["pass_ball_speed"])
+	if executed_kind != RESTART_KICKOFF:
+		var inward := _restart_inward_direction(executed_kind, from_position)
+		var minimum_inward_component := direction.length() * 0.35
+		direction += inward * maxf(0.0, minimum_inward_component - direction.dot(inward))
+	ball_velocity_3d = Vector3(direction.normalized().x, direction.normalized().y, 0.0) * float(config["match"]["pass_ball_speed"])
+	ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
 	last_touch_team_index = taker.team_index
 	last_touch_player_id = taker.id
 	var text := "[Restart] %s taken by %s (#%d) for %s (#%d); the ball is live." % [
@@ -2373,6 +2622,19 @@ func _execute_pending_restart() -> bool:
 	]
 	_set_last_action(text, 1.0, "Guaranteed deterministic restart delivery.")
 	return true
+
+func _restart_inward_direction(kind: String, restart_position_value: Vector2) -> Vector2:
+	var field: Dictionary = config["field"]
+	var radius := float(field["ball_radius"])
+	if kind == RESTART_THROW_IN:
+		return Vector2.DOWN if restart_position_value.y <= float(field["height"]) * 0.5 else Vector2.UP
+	if kind == RESTART_CORNER:
+		var x_inward := Vector2.RIGHT if restart_position_value.x <= float(field["width"]) * 0.5 else Vector2.LEFT
+		var y_inward := Vector2.DOWN if restart_position_value.y <= radius + 1.0 else Vector2.UP
+		return (x_inward + y_inward).normalized()
+	if kind == RESTART_GOAL_KICK:
+		return Vector2.RIGHT if restart_position_value.x <= float(field["width"]) * 0.5 else Vector2.LEFT
+	return Vector2.ZERO
 
 func _log_kickoff_placement(taker: FootballPlayer, receiver: FootballPlayer) -> void:
 	var team_descriptions: Array[String] = []

@@ -375,6 +375,8 @@ func _run_boundary_scenario(scenario: Dictionary) -> Dictionary:
 	var awarded_team := int(scenario["awarded_team"])
 	var last_toucher: FootballPlayer = simulation.teams[last_touch_team].players[1]
 	var scores_before := [simulation.teams[0].score, simulation.teams[1].score]
+	for defender in simulation.teams[1 - last_touch_team].players:
+		defender.position = Vector2(-500.0, -500.0)
 	simulation._set_possession(last_toucher)
 	var last_touch_was_recorded := simulation.last_touch_team_index == last_touch_team \
 		and simulation.last_touch_player_id == last_toucher.id \
@@ -386,9 +388,19 @@ func _run_boundary_scenario(scenario: Dictionary) -> Dictionary:
 	simulation.ball_target = last_toucher
 	simulation.ball_position = scenario["start"]
 	simulation.ball_velocity = scenario["velocity"]
+	simulation.ball_position_3d = Vector3(simulation.ball_position.x, simulation.ball_position.y, float(simulation.config["match"]["ball_flight"]["ball_radius_px"]))
+	simulation.ball_velocity_3d = Vector3(simulation.ball_velocity.x, simulation.ball_velocity.y, 0.0)
+	simulation.ball_in_flight = true
+	simulation.ball_on_ground = true
+	simulation.ball_flight_phase = "ground_pass"
+	simulation.ball_pass_probability = 1.0
+	simulation.ball_shooter_id = last_toucher.id
 	simulation.last_touch_team_index = last_touch_team
 	simulation.last_touch_player_id = last_toucher.id
 	simulation.step_tick()
+	for player in simulation.teams[1 - last_touch_team].players:
+		if player.id != simulation.restart_taker_id:
+			player.position = player.tactical_position
 
 	var kind := str(scenario["kind"])
 	var expected_boundary := str(scenario["boundary"])
@@ -621,10 +633,18 @@ func _run_post_goal_kickoff() -> Dictionary:
 	simulation.config["probability"]["goalkeeper_save_slope"] = 100.0
 	simulation.config["probability"]["action_weights"]["shot"] = {"finishing": 1.0}
 	simulation.config["probability"]["action_weights"]["goalkeeper"] = {"goalkeeping": 1.0}
-	simulation._goalkeeper(simulation.teams[1]).attributes["goalkeeping"] = 0
+	var goalkeeper := simulation._goalkeeper(simulation.teams[1])
+	goalkeeper.attributes["goalkeeping"] = 0
+	goalkeeper.position = Vector2(950.0, 0.0)
+	goalkeeper.tactical_position = goalkeeper.position
 	var starting_score := [simulation.teams[0].score, simulation.teams[1].score]
 	var awards_before := _count_awards(simulation, "kick-off")
+	simulation._set_possession(shooter)
 	simulation._resolve_shot(shooter, simulation.teams[0])
+	for _flight_tick in range(40):
+		if simulation.restart_pending:
+			break
+		simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
 	var scoring_event := ""
 	for event in simulation.event_log:
 		if str(event).contains(" scores!"):
