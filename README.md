@@ -1,8 +1,8 @@
 # GMN1
 
-A deterministic 2D PVP football (soccer) autobattler where both players act as managers. Built with Godot 4, featuring mathematical probability models, professional formations, collective team play, live tactical commands, and lockstep networking.
+A deterministic PVP football (soccer) autobattler where both players act as managers. Built with Godot 4, featuring mathematical probability models, professional formations, collective team play, live tactical commands, and lockstep networking.
 
-GMN1 is an early playable prototype focused on its simulation and networking core. Visuals are intentionally simple, and networking currently targets direct two-player sessions rather than matchmaking.
+GMN1 is an early playable prototype focused on its simulation and networking core. The match presentation uses a simple 3D pitch and ball with flat player tokens; networking currently targets direct two-player sessions rather than matchmaking.
 
 ## Features
 
@@ -41,9 +41,13 @@ The simulation advances in fixed 0.1-second match-time steps. The RNG is seeded 
 
 ### Physical ball flight (Phase A)
 
-Players remain 2D circles on the pitch, while the authoritative ball uses a deterministic 3D custom integrator (`x` = pitch length, `y` = pitch width, `z` = height). Passes and shots move over fixed simulation ticks. Pass success is resolved when the moving ball reaches its receiver; a defender within the configured low-ball interception radius can take it first. Shot accuracy selects an aim lane at launch; goals, frame hits, goalkeeper saves, and out-of-play restarts follow from the ball's path and contacts. A keeper save redirects the ball with an impulse. Outfield blocks are intentionally skipped in Phase A; player bodies do not collide with the ball in flight.
+Players remain 2D circles in the simulation, while the authoritative ball uses a deterministic 3D custom integrator (`x` = pitch length, `y` = pitch width, `z` = height). Passes and shots move over fixed simulation ticks. Pass success is resolved when the moving ball reaches its receiver; a defender within the configured low-ball interception radius can take it first. Shot accuracy selects an aim lane at launch; goals, frame hits, goalkeeper saves, and out-of-play restarts follow from the ball's path and contacts. A keeper save redirects the ball with an impulse. Outfield blocks are intentionally skipped in Phase A; player bodies do not collide with the ball in flight.
 
-`field.pitch_length_m` sets the horizontal scale. The default 1,000 px pitch length represents 105 m, or about 9.524 px/m (0.105 m/px). FIFA-like goal dimensions of 7.32 m by 2.44 m therefore produce a 69.7 px-wide by 23.2 px-high mouth. Ball radius, post/crossbar radii, gravity, air drag, ground restitution/friction, shot/pass speeds, keeper reach, and sleep thresholds are in `match.ball_flight`; speed values use px/s and gravity uses px/s² under this same pitch-length scale. The 2D renderer continues to draw the ball at its pitch projection and does not yet visualize height. Ball position, velocity, flight phase, and contact flags are included in hashes and schema-version-6 snapshots.
+`field.pitch_length_m` sets the horizontal scale. The default 1,000 px pitch length represents 105 m, or about 9.524 px/m (0.105 m/px). FIFA-like goal dimensions of 7.32 m by 2.44 m therefore produce a 69.7 px-wide by 23.2 px-high mouth. Ball radius, post/crossbar radii, gravity, air drag, ground restitution/friction, shot/pass speeds, keeper reach, and sleep thresholds are in `match.ball_flight`; speed values use px/s and gravity uses px/s² under this same pitch-length scale. Ball position, velocity, flight phase, and contact flags are included in hashes and schema-version-6 snapshots.
+
+### 3D match presentation (Phase B)
+
+The view mirrors simulation coordinates as world `(X, Z, Y)`: pitch `x` maps to world `X`, pitch `y` maps to world `Z`, and ball height maps to world `Y`. The view uses the Phase A metres-per-pixel scale for pitch, goal frame, and ball dimensions. A fixed orthographic camera is tilted 70° above the pitch from horizontal; this keeps the whole field readable while making ball height, posts, crossbar, and a simple net visible. Players remain flat circular team-colored tokens with shirt numbers and selection/possession rings. Only the 3D pitch view renders the field actors, so the simulation ball is not doubled by the previous 2D drawing. After a goal, the renderer holds the ball at the simulation's goal-volume event position briefly before showing the kickoff reset; this is presentation-only. Camera, line, net, and goal-display settings live under `view.pitch3d` in `data/match_config.json`; none affect deterministic match state.
 
 ## Formations and collective play
 
@@ -120,11 +124,11 @@ All current roster templates, formations, match timing, pitch dimensions, physic
 - `thresholds` fatigue/shot-zone/rebound/instruction breakpoints; `decision` shot selection and pass-target scoring.
 - `determinism_test` short test half-duration and command tick schedule.
 - `network` UDP port, command lead, tick-beacon/hash/snapshot intervals, snapshot version, maximum pending commands, reconnect enable/grace period, ping interval, and client catch-up limit.
-- `match.ball_flight` pitch-derived scale, FIFA-like goal size, ball/frame radii, gravity, air/ground drag, restitution, shot speeds, keeper interaction bounds, and flight sleep threshold.
+- `match.ball_flight` pitch-derived scale, FIFA-like goal size, ball/frame radii, gravity, air/ground drag, restitution, shot speeds, keeper interaction bounds, and flight sleep threshold; `view.pitch3d` controls the fixed camera and visible net/markings.
 - `decision.pass_selection` nearby/open-space/support-angle/progression weights, role profiles, long-range penalties, clear-chance thresholds, and minimum short-pass buildup.
 - `formations` positions; `player_templates` attributes; `teams` names, colors, rosters, and starting formations.
 
-Player/team state classes live in `scripts/data/`; match logic plus deterministic state serialization/hashing are in `scripts/simulation/`; ENet, lobby, snapshot transport, and reconnect logic are in `scripts/network/`; manager-command routing is in `scripts/managers/`; and the 2D pitch, HUD, and debug overlay are in `scripts/ui/`.
+Player/team state classes live in `scripts/data/`; match logic plus deterministic state serialization/hashing are in `scripts/simulation/`; ENet, lobby, snapshot transport, and reconnect logic are in `scripts/network/`; manager-command routing is in `scripts/managers/`; and the 3D pitch, HUD, and debug overlay are in `scripts/ui/`.
 
 ```text
 data/match_config.json

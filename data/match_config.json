@@ -12,6 +12,18 @@
     "player_radius": 13.0,
     "ball_radius": 5.0
   },
+  "view": {
+    "pitch3d": {
+      "camera_vertical_size_px": 670.0,
+      "camera_elevation_degrees": 70.0,
+      "marking_width_px": 1.5,
+      "net_depth_m": 3.0,
+      "net_opacity": 0.42,
+      "net_rows": 4,
+      "net_columns": 8,
+      "goal_display_seconds": 0.65
+    }
+  },
   "match": {
     "half_duration_seconds": 180.0,
     "tick_seconds": 0.1,

@@ -3,6 +3,7 @@ extends Node2D
 const SimulationScript = preload("res://scripts/simulation/match_simulation.gd")
 const ManagerControllerScript = preload("res://scripts/managers/manager_controller.gd")
 const NetworkSessionScript = preload("res://scripts/network/network_session.gd")
+const Pitch3DScript = preload("res://scripts/ui/pitch_3d.gd")
 const CONFIG_PATH := "res://data/match_config.json"
 
 var simulation: MatchSimulation
@@ -28,6 +29,7 @@ var network_status_label: Label
 var join_button: Button
 var drop_link_button: Button
 var action_buttons: Array[Button] = []
+var pitch_view: Node3D
 
 func _ready() -> void:
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(CONFIG_PATH))
@@ -47,6 +49,7 @@ func _ready() -> void:
 	if not simulation.setup_match(formation_names[formation_index]):
 		push_error("Could not initialize match simulation.")
 		return
+	_create_pitch_view(parsed)
 	manager_controller = ManagerControllerScript.new(simulation)
 	network_session = NetworkSessionScript.new()
 	network_session.name = "NetworkSession"
@@ -63,43 +66,27 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	if simulation != null:
-		queue_redraw()
 		_update_clock()
 
-func _draw() -> void:
-	if field.is_empty() or simulation == null:
-		return
-	var width := float(field["width"])
-	var height := float(field["height"])
-	var bounds := Rect2(view_offset, Vector2(width, height))
-	draw_rect(bounds, Color("#267c48"))
-	draw_rect(bounds, Color("#e8f2e7"), false, 3.0)
-	draw_line(view_offset + Vector2(width * 0.5, 0), view_offset + Vector2(width * 0.5, height), Color("#e8f2e7"), 2.0)
-	draw_arc(view_offset + Vector2(width * 0.5, height * 0.5), float(field["center_circle_radius"]), 0, TAU, 64, Color("#e8f2e7"), 2.0)
-	draw_circle(view_offset + Vector2(width * 0.5, height * 0.5), 4.0, Color("#e8f2e7"))
-	var box_depth := float(field["penalty_area_depth"])
-	var box_height := float(field["penalty_area_height"])
-	var box_y := (height - box_height) * 0.5
-	draw_rect(Rect2(view_offset + Vector2(0, box_y), Vector2(box_depth, box_height)), Color("#e8f2e7"), false, 2.0)
-	draw_rect(Rect2(view_offset + Vector2(width - box_depth, box_y), Vector2(box_depth, box_height)), Color("#e8f2e7"), false, 2.0)
-	var goal_height := float(field["goal_width"])
-	draw_rect(Rect2(view_offset + Vector2(-8, (height - goal_height) * 0.5), Vector2(8, goal_height)), Color("#f4f4f4"))
-	draw_rect(Rect2(view_offset + Vector2(width, (height - goal_height) * 0.5), Vector2(8, goal_height)), Color("#f4f4f4"))
-	_draw_players()
-	draw_circle(view_offset + simulation.ball_position, float(field["ball_radius"]), Color("#fff9df"))
-	draw_circle(view_offset + simulation.ball_position, float(field["ball_radius"]), Color("#292929"), false, 1.2)
-
-func _draw_players() -> void:
-	var font := ThemeDB.fallback_font
-	for team in simulation.teams:
-		for player in team.players:
-			var center := view_offset + player.position
-			var radius := float(field["player_radius"])
-			draw_circle(center, radius, team.color)
-			draw_circle(center, radius, Color("#10231a"), false, 1.5)
-			draw_string(font, center + Vector2(-6, 5), str(player.number), HORIZONTAL_ALIGNMENT_CENTER, 16, 11, Color.WHITE)
-			if player == simulation.ball_owner:
-				draw_arc(center, radius + 4.0, 0, TAU, 24, Color("#ffe173"), 2.0)
+func _create_pitch_view(parsed_config: Dictionary) -> void:
+	var container := SubViewportContainer.new()
+	container.name = "Pitch3DViewport"
+	container.position = view_offset
+	container.size = Vector2(float(field["width"]), float(field["height"]))
+	container.stretch = true
+	container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(container)
+	var viewport := SubViewport.new()
+	viewport.name = "Pitch3DSubViewport"
+	viewport.size = Vector2i(roundi(float(field["width"])), roundi(float(field["height"])))
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	viewport.handle_input_locally = false
+	container.add_child(viewport)
+	pitch_view = Pitch3DScript.new()
+	pitch_view.name = "Pitch3D"
+	viewport.add_child(pitch_view)
+	var pitch_view_config: Dictionary = parsed_config.get("view", {}).get("pitch3d", {})
+	pitch_view.call("configure", simulation, field, simulation.config["match"]["ball_flight"], pitch_view_config)
 
 func _create_ui() -> void:
 	var layer := CanvasLayer.new()
