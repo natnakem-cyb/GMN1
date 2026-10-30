@@ -10,7 +10,10 @@ func _run() -> void:
 	or not _test_post_collision() or not _test_overbar_out() or not _test_trajectory_determinism():
 		quit(1)
 		return
-	print("PASS: multi-tick pass, both goal directions, post collision, overbar exit, and deterministic trajectories.")
+	if not _test_box_run_edge_eligibility():
+		quit(1)
+		return
+	print("PASS: multi-tick pass, both goal directions, post collision, overbar exit, deterministic trajectories, and inclusive box-edge shot eligibility.")
 	quit(0)
 
 func _new_simulation() -> MatchSimulation:
@@ -46,6 +49,58 @@ func _test_pass_reception() -> bool:
 		push_error("Ball flight test failed: ground pass did not reach the receiver after multiple ticks.")
 	simulation.free()
 	return passed
+
+func _test_box_run_edge_eligibility() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	var team: FootballTeam = simulation.teams[0]
+	var shooter: FootballPlayer = null
+	for player in team.players:
+		if player.tactical_role == "ST":
+			shooter = player
+			break
+	if shooter == null:
+		simulation.free()
+		return false
+	var field: Dictionary = simulation.config["field"]
+	var edge_margin := float(simulation.config["decision"]["shot_selection"]["box_edge_margin"])
+	var edge_x := float(field["width"]) - float(field["penalty_area_depth"]) - edge_margin
+	shooter.position = Vector2(edge_x - 0.1, float(field["height"]) * 0.5)
+	shooter.box_run_active = true
+	shooter.box_run_target = shooter.position - Vector2(70.0, 0.0)
+	team.completed_passes_in_possession = int(simulation.config["decision"]["pass_selection"]["minimum_build_up_passes_before_shot"])
+	for defender in simulation.teams[1].players:
+		defender.position = Vector2(-500.0, -500.0)
+	var outside_declined := not simulation._box_run_shot_ready(shooter, team) \
+		and str(simulation.event_log.back()).contains("box run not reached")
+	shooter.position.x = edge_x
+	shooter.box_run_target = shooter.position - Vector2(70.0, 0.0)
+	var line_distance := simulation._distance_to_penalty_area_line(shooter.position, team)
+	var context := simulation._shot_context_breakdown(
+		shooter.position, team, float(field["width"]) - shooter.position.x,
+		simulation._attack_progress_x(shooter.position.x, team), 1000.0
+	)
+	var eligible := outside_declined and is_equal_approx(line_distance, edge_margin) \
+		and simulation._is_inside_or_on_shot_box_edge(shooter.position, team, edge_margin) \
+		and bool(context["inside_box_or_edge"]) and not bool(context["inside_box"]) \
+		and simulation._should_shoot(shooter, team)
+	if eligible:
+		simulation._set_possession(shooter)
+		simulation.config["match"]["minimum_probability"] = 0.999
+		simulation.config["match"]["maximum_probability"] = 0.999
+		simulation._resolve_shot(shooter, team)
+		eligible = simulation.ball_in_flight and simulation.ball_flight_phase == "shot"
+		for _tick in range(60):
+			if team.score > 0 or simulation.restart_pending:
+				break
+			simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
+		eligible = eligible and team.score == 1 and simulation.restart_pending \
+			and simulation.restart_kind == "kickoff"
+	if not eligible:
+		push_error("Shot selection test failed: the edge shot was declined or did not resolve through flight.")
+	simulation.free()
+	return eligible
 
 func _test_goal(attacks_right: bool) -> bool:
 	var simulation := _new_simulation()

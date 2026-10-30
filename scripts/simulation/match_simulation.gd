@@ -1397,7 +1397,10 @@ func _shot_context_breakdown(
 	if attack_x >= float(config["thresholds"]["shot_preferred_attack_x"]):
 		preferred_bonus = float(probability_data["preferred_zone_shot_bonus"])
 	var inside_penalty_area := _is_inside_position_shot_box(shooter_position, team, 0.0)
-	var box_bonus := float(probability_data["shot_box_bonus"]) if inside_penalty_area else 0.0
+	var inside_box_or_edge := _is_inside_or_on_shot_box_edge(
+		shooter_position, team, float(config["decision"]["shot_selection"]["box_edge_margin"])
+	)
+	var box_bonus := float(probability_data["shot_box_bonus"]) if inside_box_or_edge else 0.0
 	var pressure_factor := clampf(
 		1.0 - pressure_distance / float(probability_data["shot_pressure_distance"]),
 		0.0,
@@ -1412,6 +1415,7 @@ func _shot_context_breakdown(
 		"preferred": preferred_bonus,
 		"box": box_bonus,
 		"inside_box": inside_penalty_area,
+		"inside_box_or_edge": inside_box_or_edge,
 		"tactical": _tactical_modifier(team, "shot"),
 		"pressure_factor": pressure_factor
 	}
@@ -2046,15 +2050,14 @@ func _should_shoot(player: FootballPlayer, team: FootballTeam) -> bool:
 		0.0,
 		1.0
 	)
-	var inside_box := _is_inside_shot_box(player, team, 0.0)
-	var on_box_edge := not inside_box and _is_inside_shot_box(
-		player, team, float(selection_data["box_edge_margin"])
+	var inside_box_or_edge := _is_inside_or_on_shot_box_edge(
+		player.position, team, float(selection_data["box_edge_margin"])
 	)
 	if player.box_run_active and not _box_run_shot_ready(player, team):
 		return false
 	var nearest_defender_distance := player.position.distance_to(nearest_defender.position)
 	var is_direct_attempt := _is_direct_play_mode(team)
-	if inside_box or on_box_edge:
+	if inside_box_or_edge:
 		if angle_ratio > float(selection_data["inside_box_max_angle_ratio"]):
 			_log_shot_declined(player, "bad angle", attack_x)
 			return false
@@ -2081,8 +2084,7 @@ func _should_shoot(player: FootballPlayer, team: FootballTeam) -> bool:
 	var pass_data: Dictionary = config["decision"]["pass_selection"]
 	if team.game_plan == "Possession" and not team.has_instruction("direct_long_balls"):
 		if team.completed_passes_in_possession < int(pass_data["minimum_build_up_passes_before_shot"]):
-			var box_line_distance := _distance_to_penalty_area_line(player, team)
-			var open_box_chance := (inside_box or is_zero_approx(box_line_distance)) \
+			var open_box_chance := inside_box_or_edge \
 				and angle_ratio <= float(selection_data["inside_box_max_angle_ratio"]) \
 				and nearest_defender_distance >= float(selection_data["minimum_unmarked_distance"])
 			if open_box_chance:
@@ -2094,15 +2096,15 @@ func _should_shoot(player: FootballPlayer, team: FootballTeam) -> bool:
 				return false
 	return true
 
-func _is_inside_shot_box(player: FootballPlayer, team: FootballTeam, edge_margin: float) -> bool:
-	return _is_inside_position_shot_box(player.position, team, edge_margin)
+func _is_inside_or_on_shot_box_edge(position: Vector2, team: FootballTeam, edge_margin: float) -> bool:
+	if _is_inside_position_shot_box(position, team, 0.0):
+		return true
+	return _distance_to_penalty_area_line(position, team) <= edge_margin
 
 func _box_run_shot_ready(player: FootballPlayer, team: FootballTeam) -> bool:
 	var target_distance := player.position.distance_to(player.box_run_target)
-	var inside_box := _is_inside_position_shot_box(player.position, team, 0.0)
 	var edge_margin := float(config["decision"]["shot_selection"]["box_edge_margin"])
-	var on_box_edge := _is_inside_position_shot_box(player.position, team, edge_margin)
-	if inside_box or on_box_edge:
+	if _is_inside_or_on_shot_box_edge(player.position, team, edge_margin):
 		return true
 	var attack_x := _attack_progress_x(player.position.x, team)
 	_log_shot_declined(player, "box run not reached (%.1fpx from target)" % target_distance, attack_x)
@@ -2116,17 +2118,17 @@ func _is_inside_position_shot_box(position: Vector2, team: FootballTeam, edge_ma
 	return distance_to_goal <= float(field_data["penalty_area_depth"]) + edge_margin \
 		and lateral_offset <= float(field_data["penalty_area_height"]) * 0.5 + edge_margin
 
-func _distance_to_penalty_area_line(player: FootballPlayer, team: FootballTeam) -> float:
+func _distance_to_penalty_area_line(position: Vector2, team: FootballTeam) -> float:
 	var field_data: Dictionary = config["field"]
 	var goal_x := float(field_data["width"]) if team.attacks_right else 0.0
-	var distance_to_goal := absf(goal_x - player.position.x)
-	var lateral_offset := absf(player.position.y - float(field_data["height"]) * 0.5)
+	var distance_to_goal := absf(goal_x - position.x)
+	var lateral_offset := absf(position.y - float(field_data["height"]) * 0.5)
 	var box_line_x_gap := maxf(distance_to_goal - float(field_data["penalty_area_depth"]), 0.0)
 	var box_line_y_gap := maxf(lateral_offset - float(field_data["penalty_area_height"]) * 0.5, 0.0)
 	return Vector2(box_line_x_gap, box_line_y_gap).length()
 
 func _log_shot_declined(player: FootballPlayer, reason: String, attack_x: float) -> void:
-	var box_line_distance := _distance_to_penalty_area_line(player, teams[player.team_index])
+	var box_line_distance := _distance_to_penalty_area_line(player.position, teams[player.team_index])
 	var text := "[Shot] %s declines at x=%.1f (attack %.3f, box-line distance %.1fpx): %s." % [
 		player.player_name, player.position.x, attack_x, box_line_distance, reason
 	]
