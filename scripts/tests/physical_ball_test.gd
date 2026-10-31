@@ -58,7 +58,7 @@ func _test_roll_and_bounce() -> bool:
 	simulation._sync_ball_projection()
 	var initial_speed := simulation.ball_velocity_3d.length()
 	simulation._advance_ball(0.1)
-	var rolled: bool := simulation.ball_orientation != Quaternion.IDENTITY \
+	var rolled: bool = simulation.ball_orientation != Quaternion.IDENTITY \
 		and simulation.ball_velocity_3d.length() < initial_speed
 	for _step in range(200):
 		if not simulation.ball_in_flight:

@@ -124,7 +124,7 @@ func _test_kicker_release(simulation: MatchSimulation) -> bool:
 				simulation.ball_position_3d.z - passer.position.y * simulation._metres_per_pixel()
 			)
 			var away_dot := launch_vector.dot(Vector2(simulation.ball_velocity_3d.x, simulation.ball_velocity_3d.z))
-			var clear_distance: float := simulation._ball_kick_clearance_distance()
+			var clear_distance: float = simulation._ball_kick_clearance_distance()
 			var start_separation := launch_vector.length()
 			var launched := simulation.ball_target == receiver and simulation.ball_owner == null \
 				and simulation.ball_in_flight and simulation.ball_kicker_clearance_id == passer.id \
