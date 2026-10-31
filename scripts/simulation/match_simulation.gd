@@ -32,6 +32,8 @@ var ball_pass_probability := -1.0
 var ball_shooter_id := NO_PLAYER_ID
 var ball_keeper_attempted := false
 var ball_owner: FootballPlayer
+var ball_kicker_clearance_id: int = -1
+var ball_kicker_clearance_ticks: int = 0
 var ball_target: FootballPlayer
 var active := false
 var finished := false
@@ -1270,6 +1272,20 @@ func _resolve_next_action() -> void:
 	else:
 		_resolve_pass(ball_owner, owner_team)
 
+func _apply_kicker_clearance(player: FootballPlayer, flat_direction: Vector2) -> void:
+	var field_data: Dictionary = config["field"]
+	var ball_data: Dictionary = config["match"]["ball_flight"]
+	var metres_per_pixel := float(ball_data["metres_per_pixel"])
+	var margin_m := float(ball_data["kicker_clearance_margin_m"])
+	var player_radius_px := float(field_data["player_radius"])
+	var ball_radius_px := float(field_data["ball_radius"])
+	var need_px := player_radius_px + ball_radius_px + (margin_m / metres_per_pixel)
+	ball_position = player.position + flat_direction * need_px
+	ball_kicker_clearance_id = player.id
+	ball_kicker_clearance_ticks = 0
+	var measured := ball_position.distance_to(player.position)
+	print("[Ball] launch clearance kicker=#%d dist=%.2fpx need=%.2fpx" % [player.id, measured, need_px])
+
 func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
 	if restart_pending or finished or ball_in_flight:
 		return
@@ -1293,7 +1309,7 @@ func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
 	if direction.length_squared() < 0.001:
 		direction = Vector2.RIGHT
 	var flat_direction := direction.normalized()
-	ball_position = player.position + flat_direction * 4.0
+	_apply_kicker_clearance(player, flat_direction)
 	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
 	ball_velocity_3d = Vector3(flat_direction.x, flat_direction.y, 0.0) * float(config["match"]["pass_ball_speed"])
 	ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
@@ -1359,8 +1375,8 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 	var speed := lerpf(float(ball_data["shot_speed_min_px_s"]), float(ball_data["shot_speed_max_px_s"]), clampf((shot_power + player.get_attribute("finishing") / 100.0) * 0.5, 0.0, 1.0))
 	ball_owner = null
 	ball_target = null
-	ball_position = shooter_position + flat_direction * 4.0
-	ball_position_3d = Vector3(shooter_position.x, shooter_position.y, float(ball_data["ball_radius_px"]))
+	_apply_kicker_clearance(player, flat_direction)
+	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(ball_data["ball_radius_px"]))
 	ball_velocity_3d = Vector3(flat_direction.x * speed, flat_direction.y * speed, float(ball_data["shot_vertical_speed_px_s"]))
 	ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
 	ball_in_flight = true
@@ -1654,6 +1670,15 @@ func _advance_ball(seconds: float) -> void:
 				ball_velocity_3d.y *= maxf(0.0, 1.0 - float(ball_data["ground_friction"]) * sub_dt)
 		ball_position = Vector2(ball_position_3d.x, ball_position_3d.y)
 		ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
+		if ball_kicker_clearance_id != -1:
+			ball_kicker_clearance_ticks += 1
+			var kicker := _find_player_by_id(ball_kicker_clearance_id)
+			var field_data_clear: Dictionary = config["field"]
+			var ball_data_clear: Dictionary = config["match"]["ball_flight"]
+			var clear_radius := float(field_data_clear["player_radius"]) + float(field_data_clear["ball_radius"])
+			var max_ticks := int(ball_data_clear["kicker_contact_ignore_max_ticks"])
+			if kicker == null or ball_position.distance_to(kicker.position) > clear_radius or ball_kicker_clearance_ticks >= max_ticks:
+				ball_kicker_clearance_id = -1
 		if ball_flight_phase in ["shot", "rebound"]:
 			if _resolve_frame_collision():
 				ball_position = Vector2(ball_position_3d.x, ball_position_3d.y)
@@ -1716,7 +1741,11 @@ func _try_pass_interception() -> bool:
 	for defender in defenders.players:
 		if defender.tactical_role == "GK":
 			continue
+		if ball_kicker_clearance_id != -1 and defender.id == ball_kicker_clearance_id:
+			continue
 		if defender.position.distance_to(ball_position) <= radius:
+			var is_kicker := defender.id == ball_shooter_id
+			print("[Ball] first contact player=#%d kicker=%s" % [defender.id, str(is_kicker)])
 			var text := "[Ball] %s (#%d) intercepts pass in flight at (%.1f, %.1f, %.1f)" % [defender.player_name, defender.id, ball_position_3d.x, ball_position_3d.y, ball_position_3d.z]
 			event_log.append(text)
 			print(text)
