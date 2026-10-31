@@ -1279,7 +1279,7 @@ func _apply_kicker_clearance(player: FootballPlayer, flat_direction: Vector2) ->
 	var metres_per_pixel := float(ball_data["metres_per_pixel"])
 	var margin_m := float(ball_data["kicker_clearance_margin_m"])
 	var player_radius_px := float(field_data["player_radius"])
-	var ball_radius_px := float(field_data["ball_radius"])
+	var ball_radius_px := float(ball_data["ball_radius_px"])
 	var need_px := player_radius_px + ball_radius_px + (margin_m / metres_per_pixel)
 	ball_position = player.position + flat_direction * need_px
 	ball_launch_position = ball_position
