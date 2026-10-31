@@ -34,6 +34,7 @@ var ball_keeper_attempted := false
 var ball_owner: FootballPlayer
 var ball_kicker_clearance_id: int = -1
 var ball_kicker_clearance_ticks: int = 0
+var ball_launch_position: Vector2 = Vector2.ZERO
 var ball_target: FootballPlayer
 var active := false
 var finished := false
@@ -1281,6 +1282,7 @@ func _apply_kicker_clearance(player: FootballPlayer, flat_direction: Vector2) ->
 	var ball_radius_px := float(field_data["ball_radius"])
 	var need_px := player_radius_px + ball_radius_px + (margin_m / metres_per_pixel)
 	ball_position = player.position + flat_direction * need_px
+	ball_launch_position = ball_position
 	ball_kicker_clearance_id = player.id
 	ball_kicker_clearance_ticks = 0
 	var measured := ball_position.distance_to(player.position)
@@ -1733,7 +1735,17 @@ func _complete_flight_pass() -> void:
 		else:
 			_set_possession(receiver)
 
+func _pass_still_at_launch_point() -> bool:
+	if ball_kicker_clearance_id == -1:
+		return false
+	if ball_kicker_clearance_ticks >= int(config["match"]["ball_flight"]["kicker_contact_ignore_max_ticks"]):
+		return false
+	var radius := float(config["match"]["ball_flight"]["interception_radius_px"])
+	return ball_position.distance_to(ball_launch_position) < radius
+
 func _try_pass_interception() -> bool:
+	if _pass_still_at_launch_point():
+		return false
 	if ball_target == null or ball_position_3d.z > float(config["match"]["ball_flight"]["ball_radius_px"]) + 4.0:
 		return false
 	var defenders: FootballTeam = teams[1 - ball_target.team_index]
@@ -2128,7 +2140,7 @@ func _should_shoot(player: FootballPlayer, team: FootballTeam) -> bool:
 func _is_inside_or_on_shot_box_edge(position: Vector2, team: FootballTeam, edge_margin: float) -> bool:
 	if _is_inside_position_shot_box(position, team, 0.0):
 		return true
-	return _distance_to_penalty_area_line(position, team) <= edge_margin
+	return _distance_to_penalty_area_line(position, team) <= edge_margin + 0.01
 
 func _box_run_shot_ready(player: FootballPlayer, team: FootballTeam) -> bool:
 	var target_distance := player.position.distance_to(player.box_run_target)
@@ -2158,7 +2170,7 @@ func _distance_to_penalty_area_line(position: Vector2, team: FootballTeam) -> fl
 
 func _log_shot_declined(player: FootballPlayer, reason: String, attack_x: float) -> void:
 	var box_line_distance := _distance_to_penalty_area_line(player.position, teams[player.team_index])
-	var text := "[Shot] %s declines at x=%.1f (attack %.3f, box-line distance %.1fpx): %s." % [
+	var text := "[Shot] %s declines at x=%.1f (attack %.3f, box-line distance %.3fpx): %s." % [
 		player.player_name, player.position.x, attack_x, box_line_distance, reason
 	]
 	event_log.append(text)
@@ -2208,6 +2220,13 @@ func _nearest_player(target: Vector2) -> FootballPlayer:
 	var nearest_distance := INF
 	for team in teams:
 		for player in team.players:
+			if not player.on_pitch:
+				continue
+			if ball_kicker_clearance_id != -1 and player.id == ball_kicker_clearance_id:
+				if ball_kicker_clearance_ticks < int(config["match"]["ball_flight"]["kicker_contact_ignore_max_ticks"]):
+					var kicker := _find_player_by_id(ball_kicker_clearance_id)
+					if kicker != null and target.distance_to(kicker.position) <= float(config["field"]["player_radius"]) + float(config["field"]["ball_radius"]):
+						continue
 			var distance := player.position.distance_to(target)
 			if distance < nearest_distance:
 				nearest_distance = distance
