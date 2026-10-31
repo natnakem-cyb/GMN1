@@ -31,7 +31,7 @@ func _test_scale_and_rest() -> bool:
 		return false
 	var field: Dictionary = simulation.config["field"]
 	var ball: Dictionary = simulation.config["match"]["ball_flight"]
-	var passed := is_equal_approx(float(field["pitch_length_m"]), 105.0) \
+	var passed: bool = is_equal_approx(float(field["pitch_length_m"]), 105.0) \
 		and is_equal_approx(float(field["pitch_width_m"]), 68.0) \
 		and is_equal_approx(simulation.ball_radius_m, 0.11) \
 		and is_equal_approx(simulation.ball_mass_kg, 0.43) \
@@ -73,7 +73,7 @@ func _test_roll_and_bounce() -> bool:
 	simulation.ball_velocity_3d = Vector3(14.0, 0.0, 0.0)
 	simulation._sync_ball_projection()
 	simulation._advance_ball(0.5)
-	var ground_pass_stayed_low := simulation.ball_on_ground \
+	var ground_pass_stayed_low: bool = simulation.ball_on_ground \
 		and absf(simulation.ball_position_3d.y - simulation.ball_radius_m) < 0.001
 	simulation.ball_in_flight = true
 	simulation.ball_on_ground = false
@@ -95,7 +95,7 @@ func _test_roll_and_bounce() -> bool:
 			rebound_height = maxf(rebound_height, simulation.ball_position_3d.y)
 		if bounced and simulation.ball_on_ground:
 			break
-	var lofted_pass_bounced := bounced and rebound_height > simulation.ball_radius_m + 0.1 \
+	var lofted_pass_bounced: bool = bounced and rebound_height > simulation.ball_radius_m + 0.1 \
 		and peak_height > simulation.ball_radius_m + 1.0
 	# Also verify a controlled 2 m drop yields a visible rebound.
 	simulation.ball_in_flight = true
@@ -115,7 +115,7 @@ func _test_roll_and_bounce() -> bool:
 			drop_rebound_height = maxf(drop_rebound_height, simulation.ball_position_3d.y)
 		if drop_bounced and simulation.ball_on_ground:
 			break
-	var bounce_passed := lofted_pass_bounced and drop_bounced \
+	var bounce_passed: bool = lofted_pass_bounced and drop_bounced \
 		and drop_rebound_height > simulation.ball_radius_m + 0.1 \
 		and simulation.ball_position_3d.y >= simulation.ball_radius_m - 0.001
 	if not roll_passed or not ground_pass_stayed_low or not bounce_passed:
@@ -127,11 +127,11 @@ func _test_kick_profiles() -> bool:
 	var simulation := _new_simulation()
 	if simulation == null:
 		return false
-	var ground := simulation._kick_profile_velocity(Vector2.RIGHT, "ground_pass")
-	var lofted := simulation._kick_profile_velocity(Vector2.RIGHT, "lofted_pass")
-	var cross := simulation._kick_profile_velocity(Vector2.RIGHT, "cross")
-	var driven := simulation._kick_profile_velocity(Vector2.RIGHT, "driven_shot")
-	var high := simulation._kick_profile_velocity(Vector2.RIGHT, "high_shot")
+	var ground: Vector2 = simulation._kick_profile_velocity(Vector2.RIGHT, "ground_pass")
+	var lofted: Vector2 = simulation._kick_profile_velocity(Vector2.RIGHT, "lofted_pass")
+	var cross: Vector2 = simulation._kick_profile_velocity(Vector2.RIGHT, "cross")
+	var driven: Vector2 = simulation._kick_profile_velocity(Vector2.RIGHT, "driven_shot")
+	var high: Vector2 = simulation._kick_profile_velocity(Vector2.RIGHT, "high_shot")
 	var team: FootballTeam = simulation.teams[0]
 	var wide_passer: FootballPlayer = null
 	var central_midfielder: FootballPlayer = null
@@ -149,9 +149,9 @@ func _test_kick_profiles() -> bool:
 	wide_passer.position = Vector2(750.0, 150.0)
 	central_midfielder.position = Vector2(300.0, 300.0)
 	striker.position = Vector2(500.0, 300.0)
-	var cross_profile := simulation._pass_kick_profile(wide_passer, striker, team, 250.0)
-	var lofted_profile := simulation._pass_kick_profile(central_midfielder, striker, team, 250.0)
-	var passed := ground.y == 0.0 and ground.length() < 20.0 \
+	var cross_profile = simulation._pass_kick_profile(wide_passer, striker, team, 250.0)
+	var lofted_profile = simulation._pass_kick_profile(central_midfielder, striker, team, 250.0)
+	var passed: bool = ground.y == 0.0 and ground.length() < 20.0 \
 		and lofted.y > 0.0 and cross.y > lofted.y \
 		and driven.length() > ground.length() and high.y > driven.y \
 		and cross_profile == "cross" and lofted_profile == "lofted_pass"
@@ -189,7 +189,7 @@ func _test_player_contact() -> bool:
 	simulation.ball_velocity_3d = Vector3(8.0, 0.0, 0.0)
 	simulation._sync_ball_projection()
 	simulation._advance_ball(0.1)
-	var passed := simulation.ball_flight_phase == "rebound" \
+	var passed: bool = simulation.ball_flight_phase == "rebound" \
 		and simulation.last_touch_team_index == contact_player.team_index \
 		and simulation.last_touch_player_id == contact_player.id
 	if not passed:
@@ -211,7 +211,7 @@ func _test_crossbar_contact() -> bool:
 	simulation.ball_position_3d = Vector3(goal_x - 0.1, goal_height, center_z)
 	simulation.ball_velocity_3d = Vector3(10.0, 0.0, 0.0)
 	var hit := simulation._resolve_frame_collision()
-	var passed := hit and simulation.ball_flight_phase == "rebound" \
+	var passed: bool = hit and simulation.ball_flight_phase == "rebound" \
 		and simulation.ball_velocity_3d.x < 0.0
 	if not passed:
 		push_error("Physical ball test failed: swept football did not rebound from the crossbar.")
@@ -237,7 +237,7 @@ func _test_seeded_state_hashes() -> bool:
 		simulation.ball_position_3d = Vector3(30.0, 1.0, 30.0)
 		simulation.ball_velocity_3d = Vector3(8.0, 2.0, 3.0)
 		simulation._sync_ball_projection()
-	var passed := first.get_state_hash() == second.get_state_hash()
+	var passed: bool = first.get_state_hash() == second.get_state_hash()
 	for _step in range(30):
 		first._advance_ball(0.02)
 		second._advance_ball(0.02)

@@ -126,12 +126,12 @@ func _test_kicker_release(simulation: MatchSimulation) -> bool:
 			var away_dot := launch_vector.dot(Vector2(simulation.ball_velocity_3d.x, simulation.ball_velocity_3d.z))
 			var clear_distance: float = simulation._ball_kick_clearance_distance()
 			var start_separation := launch_vector.length()
-			var launched := simulation.ball_target == receiver and simulation.ball_owner == null \
+			var launched: bool = simulation.ball_target == receiver and simulation.ball_owner == null \
 				and simulation.ball_in_flight and simulation.ball_kicker_clearance_id == passer.id \
 				and start_separation >= clear_distance - 0.001 and away_dot > 0.0
 			var launch_position := simulation.ball_position_3d
 			simulation._advance_ball(0.02)
-			var escaped := simulation.ball_owner == null and simulation.ball_target == receiver \
+			var escaped: bool = simulation.ball_owner == null and simulation.ball_target == receiver \
 				and simulation.ball_in_flight and simulation.ball_position_3d.distance_to(launch_position) > 0.01 \
 				and simulation.ball_kicker_clearance_id == -1
 			var center := Vector3(
@@ -143,7 +143,7 @@ func _test_kicker_release(simulation: MatchSimulation) -> bool:
 			simulation.ball_position_3d = previous
 			simulation.ball_velocity_3d = Vector3(-2.0, 0.0, 0.0)
 			simulation.ball_kicker_clearance_id = -1
-			var recontact := simulation._resolve_player_contact(previous, current) == passer \
+			var recontact: bool = simulation._resolve_player_contact(previous, current) == passer \
 				and simulation.ball_owner == passer
 			passed = passed and launched and escaped and recontact
 	if not passed:

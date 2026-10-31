@@ -20,6 +20,7 @@ var box_run_suppressed := false
 var carry_distance: float = 0.0
 var position: Vector2 = Vector2.ZERO
 var tactical_position: Vector2 = Vector2.ZERO
+var movement_velocity: Vector2 = Vector2.ZERO
 var team_index: int = 0
 var on_pitch := true
 

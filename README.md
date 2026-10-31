@@ -2,7 +2,7 @@
 
 A deterministic PVP football (soccer) autobattler where both players act as managers. Built with Godot 4, featuring mathematical probability models, professional formations, collective team play, live tactical commands, and lockstep networking.
 
-GMN1 is an early playable prototype focused on its simulation and networking core. The match presentation uses a simple 3D pitch and ball with flat player tokens; networking currently targets direct two-player sessions rather than matchmaking.
+GMN1 is an early playable prototype focused on its simulation and networking core. The match presentation uses a procedural 3D stadium, pitch, goals, and physical football with 2D tactical player markers; networking currently targets direct two-player sessions rather than matchmaking.
 
 ## Features
 
@@ -39,15 +39,15 @@ GMN1 is an early playable prototype focused on its simulation and networking cor
 
 The simulation advances in fixed 0.1-second match-time steps. The RNG is seeded from `data/match_config.json`; resetting the match with the same seed, formation, and manager commands reproduces the same outcomes. Resolved actions and their probability formula are also printed to the Godot output panel.
 
-### Physical ball flight (Phase A)
+### Metric 3D ball simulation
 
-Players remain 2D circles in the simulation, while the authoritative ball uses a deterministic 3D custom integrator (`x` = pitch length, `y` = pitch width, `z` = height). Passes and shots move over fixed simulation ticks. Pass success is resolved when the moving ball reaches its receiver; a defender within the configured low-ball interception radius can take it first. Shot accuracy selects an aim lane at launch; goals, frame hits, goalkeeper saves, and out-of-play restarts follow from the ball's path and contacts. A keeper save redirects the ball with an impulse. Outfield blocks are intentionally skipped in Phase A; player bodies do not collide with the ball in flight.
+The authoritative ball is a deterministic fixed-step 3D simulation in metres: `X` is pitch length, `Z` is pitch width, and `Y` is height. Its state includes position, linear and angular velocity, quaternion orientation, physical radius and mass, and ground contact. The canonical pitch is 105 m × 68 m; the ball radius is 0.11 m and mass is 0.43 kg; goal dimensions are 7.32 m × 2.44 m. The 1,000 × 647.62 simulation-pixel field is a uniform 0.105 m/px projection, not an independent physics scale. Its 3D viewport uniformly fits the pitch into the available display area.
 
-`field.pitch_length_m` sets the horizontal scale. The default 1,000 px pitch length represents 105 m, or about 9.524 px/m (0.105 m/px). FIFA-like goal dimensions of 7.32 m by 2.44 m therefore produce a 69.7 px-wide by 23.2 px-high mouth. Ball radius, post/crossbar radii, gravity, air drag, ground restitution/friction, shot/pass speeds, keeper reach, and sleep thresholds are in `match.ball_flight`; speed values use px/s and gravity uses px/s² under this same pitch-length scale. Ball position, velocity, flight phase, and contact flags are included in hashes and schema-version-6 snapshots.
+Gravity, air drag, rolling resistance, spin damping, ground/frame/player material restitution and friction, collision substep distance, and kick profiles (ground pass, lofted pass, cross, driven shot, and high shot) are calibrated in metres, seconds, or dimensionless coefficients under `match.ball_flight`. Outfield player decisions remain planar; ball collisions sweep the sphere against deterministic player-height collision volumes, and keeper interactions use the same metric world. Posts, crossbar, and whole-ball goal/out-of-play tests also use metric geometry. The custom integrator remains authoritative; no engine rigid-body solver participates in match state.
 
-### 3D match presentation (Phase B)
+### 3D match presentation
 
-The view mirrors simulation coordinates as world `(X, Z, Y)`: pitch `x` maps to world `X`, pitch `y` maps to world `Z`, and ball height maps to world `Y`. The view uses the Phase A metres-per-pixel scale for pitch, goal frame, and ball dimensions. A fixed orthographic camera is tilted 70° above the pitch from horizontal; this keeps the whole field readable while making ball height, posts, crossbar, and a simple net visible. Players remain flat circular team-colored tokens with shirt numbers and selection/possession rings. Only the 3D pitch view renders the field actors, so the simulation ball is not doubled by the previous 2D drawing. After a goal, the renderer holds the ball at the simulation's goal-volume event position briefly before showing the kickoff reset; this is presentation-only. Camera, line, net, and goal-display settings live under `view.pitch3d` in `data/match_config.json`; none affect deterministic match state.
+The view renders the metric pitch on a 3D ground plane inside a procedural stadium bowl with simplified stepped seating and a roof canopy. The elevated orthographic camera fits the complete pitch to about 84% of the available viewport width, refits on window changes, and leaves the stadium as a subdued frame around play. Player markers remain camera-facing 2D team circles with contrasting borders and shirt numbers; they target 42 px at a 600 px pitch-view height, render above the ground surface, and scale with the viewport. Optional player names show only for the selected player when nearby markers leave enough room. The football is a textured, shaded, rotating 3D sphere with a height-responsive ground shadow that fades and expands as the ball rises. Its view-only diameter targets 16 px at the reference view size. During possession, the sphere moves to the carrier's leading screen-space perimeter using the carrier's last movement direction or attack direction; its shadow remains at the authoritative ball location. The authoritative collision radius remains 0.11 m and is not enlarged. Stadium, marker and ball display dimensions, carrier offset, reference viewport size, name-label toggle, camera, line, net, and goal-display settings live under `view.pitch3d` in `data/match_config.json`; none affect deterministic match state. After a goal, the renderer holds the ball at the simulation's goal-volume event position briefly before showing the kickoff reset; this is presentation-only.
 
 ## Formations and collective play
 
@@ -141,6 +141,8 @@ scripts/simulation/match_simulation.gd
 scripts/ui/main_view.gd
 scripts/tests/determinism_test.gd
 scripts/tests/ball_flight_test.gd
+scripts/tests/physical_ball_test.gd
+scripts/tests/restart_validation_test.gd
 project.godot
 README.md
 ```
@@ -149,7 +151,7 @@ The match-data JSON intentionally contains numeric tuning values and sample rost
 
 ## Determinism test
 
-Run `godot --headless --path . --script res://scripts/tests/determinism_test.gd` and `godot --headless --path . --script res://scripts/tests/ball_flight_test.gd`. The determinism suite checks kickoff and restart behavior, halftime direction changes, snapshot round-trips, malformed metadata rejection, and replay determinism. The ball-flight suite checks delayed ground-pass reception, goals in both attack directions, post collision, overbar goal-kick classification, and same-seed trajectory samples. Neither test opens a network connection.
+Run `godot --headless --path . --script res://scripts/tests/determinism_test.gd`, `godot --headless --path . --script res://scripts/tests/ball_flight_test.gd`, `godot --headless --path . --script res://scripts/tests/physical_ball_test.gd`, `godot --headless --path . --script res://scripts/tests/restart_validation_test.gd`, and `godot --headless --path . --script res://scripts/tests/ball_observability_test.gd`. The suites cover metric scale and rest height, rolling and settling, airborne bounce and kick profiles, ball/player and keeper contacts, whole-ball goal and frame interactions, matching seeded trajectories/hashes, kickoff/restart/snapshot behavior, shot-edge eligibility, carrier-relative ball visibility, and controlled/in-flight/intercepted transitions. These local tests do not open a network connection. For a two-process loopback acceptance run, start `pvp_acceptance_peer.gd host 24560 normal` and `pvp_acceptance_peer.gd client 24560 normal` in separate Godot processes using `--` before each role's arguments; both peers verify the matching full-time state hash.
 
 ## PVP command and reconnect behavior
 
@@ -157,7 +159,7 @@ The host validates each command when it is received, assigns its sequence and ta
 
 Substitution commands carry the stable outgoing player ID, not a roster index, so later roster changes cannot redirect an already-scheduled request. Pending commands are bounded by `network.maximum_pending_commands`. A sequence gap, late commit, conflicting duplicate hash/beacon, or detected tick/sequence mismatch stops simulation rather than continuing with potentially divergent state.
 
-The authoritative hash includes gameplay state, RNG state, clocks, team tactics/resources, roster/player state, 3D ball position/velocity and flight state, last-touch state, pending restart kind/team/location/taker/receiver, and match phase. It excludes `selected_player_index` (local inspection/input preference), `event_log` and last-action/probability/debug strings (observability only), and `home_formation` (redundant UI setup label; the active formations are hashed per team). Snapshot restore preserves the receiver's local selection. Snapshot schema version is `network.snapshot_version` (currently 6); the protocol digest uses marker `gmn1-lockstep-3`, so older incompatible builds/configurations do not join.
+The authoritative hash includes gameplay state, RNG state, clocks, team tactics/resources, roster/player state including movement velocity used for receiver prediction, metric 3D ball position/linear and angular velocity/orientation/contact state, kicker-clearance state, last-touch state, pending restart kind/team/location/taker/receiver, and match phase. It excludes `selected_player_index` (local inspection/input preference), `event_log` and last-action/probability/debug strings (observability only), and `home_formation` (redundant UI setup label; the active formations are hashed per team). Snapshot restore preserves the receiver's local selection. Snapshot schema version is `network.snapshot_version` (currently 9); the protocol digest uses marker `gmn1-lockstep-5`, so older incompatible builds/configurations do not join.
 
 Reconnect snapshots carry the highest sequence already applied at their tick. The replay stream contains each later committed command exactly once, including commands still scheduled in the future. The client verifies sequence continuity, target ticks, the applied sequence and final state hash before the host resumes. An invalid stream stops the session; reconnect is not treated as proven until tested between separate live Godot processes.
 
