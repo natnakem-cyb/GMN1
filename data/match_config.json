@@ -57,9 +57,17 @@
       "save_impulse_px_s": 260.0,
       "save_vertical_impulse_px_s": 95.0,
       "interception_radius_px": 14.0,
-      "substep_distance_px": 2.5
+      "substep_distance_px": 2.5,
+      "kicker_clearance_margin_m": 0.18,
+      "kicker_contact_ignore_max_ticks": 3
     },
-    "player_move_speed": 38.0,
+    ,
+      "kicker_clearance_margin_m": 0.18,
+      "kicker_contact_ignore_max_ticks": 3
+,
+      "kicker_clearance_margin_m": 0.18,
+      "kicker_contact_ignore_max_ticks": 3
+"player_move_speed": 38.0,
     "carry_speed": 24.0,
     "carry_advance_distance": 90.0,
     "pass_arrival_radius": 19.0,

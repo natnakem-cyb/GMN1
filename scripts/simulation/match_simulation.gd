@@ -1289,12 +1289,12 @@ func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
 	var formula := _formula_description(player, attributes, tactical + range_modifier)
 	ball_owner = null
 	ball_target = receiver
-	ball_position = player.position
-	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
 	var direction := receiver.position - player.position
 	if direction.length_squared() < 0.001:
 		direction = Vector2.RIGHT
 	var flat_direction := direction.normalized()
+	ball_position = player.position + flat_direction * 4.0
+	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
 	ball_velocity_3d = Vector3(flat_direction.x, flat_direction.y, 0.0) * float(config["match"]["pass_ball_speed"])
 	ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
 	ball_in_flight = true
@@ -1359,7 +1359,7 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 	var speed := lerpf(float(ball_data["shot_speed_min_px_s"]), float(ball_data["shot_speed_max_px_s"]), clampf((shot_power + player.get_attribute("finishing") / 100.0) * 0.5, 0.0, 1.0))
 	ball_owner = null
 	ball_target = null
-	ball_position = shooter_position
+	ball_position = shooter_position + flat_direction * 4.0
 	ball_position_3d = Vector3(shooter_position.x, shooter_position.y, float(ball_data["ball_radius_px"]))
 	ball_velocity_3d = Vector3(flat_direction.x * speed, flat_direction.y * speed, float(ball_data["shot_vertical_speed_px_s"]))
 	ball_velocity = Vector2(ball_velocity_3d.x, ball_velocity_3d.y)
