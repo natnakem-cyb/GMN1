@@ -1679,7 +1679,7 @@ func _advance_ball(seconds: float) -> void:
 			var ball_data_clear: Dictionary = config["match"]["ball_flight"]
 			var clear_radius := float(field_data_clear["player_radius"]) + float(field_data_clear["ball_radius"])
 			var max_ticks := int(ball_data_clear["kicker_contact_ignore_max_ticks"])
-			if kicker == null or ball_position.distance_to(kicker.position) > clear_radius or ball_kicker_clearance_ticks >= max_ticks:
+			if kicker == null or (ball_position.distance_to(kicker.position) > clear_radius and ball_kicker_clearance_ticks >= max_ticks):
 				ball_kicker_clearance_id = -1
 		if ball_flight_phase in ["shot", "rebound"]:
 			if _resolve_frame_collision():
@@ -2148,7 +2148,7 @@ func _box_run_shot_ready(player: FootballPlayer, team: FootballTeam) -> bool:
 	if _is_inside_or_on_shot_box_edge(player.position, team, edge_margin):
 		return true
 	var attack_x := _attack_progress_x(player.position.x, team)
-	_log_shot_declined(player, "box run not reached (%.1fpx from target)" % target_distance, attack_x)
+	_log_shot_declined(player, "box run not reached (%.3fpx from target)" % target_distance, attack_x)
 	return false
 
 func _is_inside_position_shot_box(position: Vector2, team: FootballTeam, edge_margin: float) -> bool:
@@ -2170,7 +2170,7 @@ func _distance_to_penalty_area_line(position: Vector2, team: FootballTeam) -> fl
 
 func _log_shot_declined(player: FootballPlayer, reason: String, attack_x: float) -> void:
 	var box_line_distance := _distance_to_penalty_area_line(player.position, teams[player.team_index])
-	var text := "[Shot] %s declines at x=%.1f (attack %.3f, box-line distance %.3fpx): %s." % [
+	var text := "[Shot] %s declines at x=%.3f (attack %.3f, box-line distance %.3fpx): %s." % [
 		player.player_name, player.position.x, attack_x, box_line_distance, reason
 	]
 	event_log.append(text)
