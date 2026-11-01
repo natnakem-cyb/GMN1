@@ -31,6 +31,8 @@ var ball_flight_phase := "none"
 var ball_pass_probability := -1.0
 var ball_shooter_id := NO_PLAYER_ID
 var ball_keeper_attempted := false
+var ball_is_restart_delivery := false
+var ball_pass_launch_telemetry: Dictionary = {}
 var ball_owner: FootballPlayer
 var ball_kicker_clearance_id: int = -1
 var ball_kicker_clearance_ticks: int = 0
@@ -148,6 +150,7 @@ func validate_snapshot(snapshot: Variant) -> bool:
 		"next_kickoff_team", "half_index", "ai_reaction_clock", "event_log", "ball_position",
 		"ball_velocity", "ball_position_3d", "ball_velocity_3d", "ball_in_flight", "ball_on_ground",
 		"ball_flight_phase", "ball_pass_probability", "ball_shooter_id", "ball_keeper_attempted",
+		"ball_is_restart_delivery", "ball_pass_launch_telemetry",
 		"ball_owner_id", "ball_target_id", "last_action", "last_probability",
 		"last_formula", "last_shot_on_target_probability", "last_goalkeeper_save_probability",
 		"last_rebound_probability", "preferred_pass_debug", "last_defensive_decision",
@@ -196,7 +199,9 @@ func validate_snapshot(snapshot: Variant) -> bool:
 	or not ["none", "ground_pass", "shot", "rebound"].has(str(state.get("ball_flight_phase"))) \
 	or not _is_finite_number(state.get("ball_pass_probability")) \
 	or not _is_int_value(state.get("ball_shooter_id")) \
-	or typeof(state.get("ball_keeper_attempted")) != TYPE_BOOL:
+	or typeof(state.get("ball_keeper_attempted")) != TYPE_BOOL \
+	or typeof(state.get("ball_is_restart_delivery")) != TYPE_BOOL \
+	or typeof(state.get("ball_pass_launch_telemetry")) != TYPE_DICTIONARY:
 		return _reject_snapshot("3D ball flight metadata is invalid")
 	if not _is_int_value(state["ball_owner_id"]) or not _is_int_value(state["ball_target_id"]):
 		return _reject_snapshot("ball references are invalid")
@@ -321,6 +326,12 @@ func validate_snapshot(snapshot: Variant) -> bool:
 	or absf(float(state["ball_velocity"][1]) - saved_ball_velocity.y) > 0.001:
 		return _reject_snapshot("2D ball projection disagrees with 3D flight state")
 	if saved_ball_position.z < 0.0 or bool(state["ball_in_flight"]) and owner_id != NO_PLAYER_ID \
+	or bool(state["ball_is_restart_delivery"]) and str(state["ball_flight_phase"]) != "ground_pass" \
+	or not _is_valid_pass_launch_telemetry(
+		state["ball_pass_launch_telemetry"],
+		str(state["ball_flight_phase"]) == "ground_pass" \
+			and not bool(state["ball_is_restart_delivery"])
+	) \
 	or str(state["ball_flight_phase"]) == "ground_pass" and (target_id == NO_PLAYER_ID or int(state["ball_shooter_id"]) == NO_PLAYER_ID) \
 	or str(state["ball_flight_phase"]) in ["shot", "rebound"] and int(state["ball_shooter_id"]) == NO_PLAYER_ID \
 	or int(state["ball_shooter_id"]) != NO_PLAYER_ID and not on_pitch_ids.has(int(state["ball_shooter_id"])) \
@@ -407,7 +418,9 @@ func _validate_match_telemetry_state(state: Dictionary, all_player_ids: Dictiona
 		"pass_attempts", "pass_completions", "progressive_completions",
 		"attacking_two_thirds_pass_completions", "shots", "shots_on_target", "goals",
 		"pair_limit_interventions", "six_yard_shot_priority",
-		"box_edge_shot_priority", "box_run_inside_edge_declines"
+		"box_edge_shot_priority", "box_run_inside_edge_declines",
+		"mid_to_st_attempts", "mid_to_st_completions", "penalty_area_entries",
+		"edge_receptions", "six_yard_receptions", "turnovers"
 	]
 	for team_index in range(teams.size()):
 		var saved_team_pairs: Variant = saved_pairs[team_index]
@@ -435,6 +448,37 @@ func _validate_match_telemetry_state(state: Dictionary, all_player_ids: Dictiona
 			or not _is_int_value(saved_team_telemetry[key]) \
 			or int(saved_team_telemetry[key]) < 0:
 				return false
+		for key in ["progressive_attempts_by_role", "progressive_completions_by_role"]:
+			var role_counts: Variant = saved_team_telemetry.get(key)
+			if not role_counts is Dictionary:
+				return false
+			for role in role_counts:
+				if typeof(role) != TYPE_STRING or not _is_int_value(role_counts[role]) \
+				or int(role_counts[role]) < 0:
+					return false
+		var saved_directions: Variant = saved_team_telemetry.get("pass_directions_by_zone")
+		if not saved_directions is Dictionary:
+			return false
+		for zone in ["DEF", "MID", "ATT"]:
+			var zone_directions: Variant = saved_directions.get(zone)
+			if not zone_directions is Dictionary:
+				return false
+			for direction_key in [
+				"forward_attempts", "lateral_attempts", "backward_attempts",
+				"forward_completions", "lateral_completions", "backward_completions"
+			]:
+				if not zone_directions.has(direction_key) \
+				or not _is_int_value(zone_directions[direction_key]) \
+				or int(zone_directions[direction_key]) < 0:
+					return false
+		var saved_shots_by_zone: Variant = saved_team_telemetry.get("shots_by_zone")
+		if not saved_shots_by_zone is Dictionary:
+			return false
+		for zone in ["DEF", "MID", "ATT", "penalty_area", "edge", "six_yard"]:
+			if not saved_shots_by_zone.has(zone) \
+			or not _is_int_value(saved_shots_by_zone[zone]) \
+			or int(saved_shots_by_zone[zone]) < 0:
+				return false
 		if int(saved_team_telemetry["progressive_completions"]) \
 		> int(saved_team_telemetry["attacking_two_thirds_pass_completions"]) \
 		or int(saved_team_telemetry["attacking_two_thirds_pass_completions"]) \
@@ -444,6 +488,29 @@ func _validate_match_telemetry_state(state: Dictionary, all_player_ids: Dictiona
 		or int(saved_team_telemetry["shots_on_target"]) > int(saved_team_telemetry["shots"]) \
 		or int(saved_team_telemetry["goals"]) > int(saved_team_telemetry["shots_on_target"]):
 			return false
+	return true
+
+func _is_valid_pass_launch_telemetry(data: Dictionary, required: bool) -> bool:
+	if not required:
+		return data.is_empty()
+	for key in [
+		"origin_in_attacking_two_thirds", "progressive", "passer_goal_distance",
+		"receiver_goal_distance", "origin_zone", "direction_key"
+	]:
+		if not data.has(key):
+			return false
+	if typeof(data["origin_in_attacking_two_thirds"]) != TYPE_BOOL \
+	or typeof(data["progressive"]) != TYPE_BOOL \
+	or bool(data["progressive"]) and not bool(data["origin_in_attacking_two_thirds"]) \
+	or not _is_finite_number(data["passer_goal_distance"]) \
+	or not _is_finite_number(data["receiver_goal_distance"]) \
+	or float(data["passer_goal_distance"]) < 0.0 \
+	or float(data["receiver_goal_distance"]) < 0.0 \
+	or typeof(data["origin_zone"]) != TYPE_STRING \
+	or not ["DEF", "MID", "ATT"].has(str(data["origin_zone"])) \
+	or typeof(data["direction_key"]) != TYPE_STRING \
+	or not ["forward", "lateral", "backward"].has(str(data["direction_key"])):
+		return false
 	return true
 
 func restore_snapshot(snapshot: Dictionary) -> bool:
@@ -518,6 +585,8 @@ func restore_snapshot(snapshot: Dictionary) -> bool:
 	ball_pass_probability = float(state["ball_pass_probability"])
 	ball_shooter_id = int(state["ball_shooter_id"])
 	ball_keeper_attempted = bool(state["ball_keeper_attempted"])
+	ball_is_restart_delivery = bool(state["ball_is_restart_delivery"])
+	ball_pass_launch_telemetry = state["ball_pass_launch_telemetry"].duplicate(true)
 	ball_owner = _find_player_by_id(int(state["ball_owner_id"]))
 	ball_target = _find_player_by_id(int(state["ball_target_id"]))
 	last_action = str(state["last_action"])
@@ -593,6 +662,8 @@ func _build_state_data(include_event_log: bool, include_presentation: bool) -> D
 		"ball_pass_probability": ball_pass_probability,
 		"ball_shooter_id": ball_shooter_id,
 		"ball_keeper_attempted": ball_keeper_attempted,
+		"ball_is_restart_delivery": ball_is_restart_delivery,
+		"ball_pass_launch_telemetry": ball_pass_launch_telemetry.duplicate(true),
 		"ball_owner_id": _player_id_or_sentinel(ball_owner),
 		"ball_target_id": _player_id_or_sentinel(ball_target),
 		"rng_seed": rng.seed,
@@ -872,6 +943,8 @@ func setup_match(chosen_formation: String) -> bool:
 	ball_pass_probability = -1.0
 	ball_shooter_id = NO_PLAYER_ID
 	ball_keeper_attempted = false
+	ball_is_restart_delivery = false
+	ball_pass_launch_telemetry.clear()
 	teams.clear()
 	for team_index in range(config["teams"].size()):
 		var team_data: Dictionary = config["teams"][team_index]
@@ -1295,6 +1368,8 @@ func _finish_full_time() -> void:
 	ball_pass_probability = -1.0
 	ball_shooter_id = NO_PLAYER_ID
 	ball_keeper_attempted = false
+	ball_is_restart_delivery = false
+	ball_pass_launch_telemetry.clear()
 	_clear_pair_pass_counts()
 	last_action = "Full time"
 	event_log.append("Full time")
@@ -1313,7 +1388,32 @@ func _new_team_match_telemetry() -> Dictionary:
 		"pair_limit_interventions": 0,
 		"six_yard_shot_priority": 0,
 		"box_edge_shot_priority": 0,
-		"box_run_inside_edge_declines": 0
+		"box_run_inside_edge_declines": 0,
+		"progressive_attempts_by_role": {},
+		"progressive_completions_by_role": {},
+		"mid_to_st_attempts": 0,
+		"mid_to_st_completions": 0,
+		"pass_directions_by_zone": {
+			"DEF": {
+				"forward_attempts": 0, "lateral_attempts": 0, "backward_attempts": 0,
+				"forward_completions": 0, "lateral_completions": 0, "backward_completions": 0
+			},
+			"MID": {
+				"forward_attempts": 0, "lateral_attempts": 0, "backward_attempts": 0,
+				"forward_completions": 0, "lateral_completions": 0, "backward_completions": 0
+			},
+			"ATT": {
+				"forward_attempts": 0, "lateral_attempts": 0, "backward_attempts": 0,
+				"forward_completions": 0, "lateral_completions": 0, "backward_completions": 0
+			}
+		},
+		"penalty_area_entries": 0,
+		"edge_receptions": 0,
+		"six_yard_receptions": 0,
+		"shots_by_zone": {
+			"DEF": 0, "MID": 0, "ATT": 0, "penalty_area": 0, "edge": 0, "six_yard": 0
+		},
+		"turnovers": 0
 	}
 
 func get_match_telemetry() -> Dictionary:
@@ -1326,12 +1426,23 @@ func get_match_telemetry() -> Dictionary:
 		team_report["progressive_share"] = float(team_report["progressive_completions"]) \
 			/ float(eligible_completions) if eligible_completions > 0 else 0.0
 		for key in total:
-			total[key] = int(total[key]) + int(match_telemetry[team_index][key])
+			total[key] = _sum_telemetry_values(total[key], match_telemetry[team_index][key])
 		team_reports.append(team_report)
 	var eligible_total := int(total["attacking_two_thirds_pass_completions"])
 	total["progressive_share"] = float(total["progressive_completions"]) \
 		/ float(eligible_total) if eligible_total > 0 else 0.0
 	return {"teams": team_reports, "total": total}
+
+func _sum_telemetry_values(left: Variant, right: Variant) -> Variant:
+	if left is Dictionary and right is Dictionary:
+		var combined: Dictionary = left.duplicate(true)
+		for key in right:
+			if combined.has(key):
+				combined[key] = _sum_telemetry_values(combined[key], right[key])
+			else:
+				combined[key] = right[key]
+		return combined
+	return int(left) + int(right)
 
 func _print_match_telemetry() -> void:
 	var report := get_match_telemetry()
@@ -1359,6 +1470,22 @@ func _print_team_match_telemetry(telemetry: Dictionary, label: String = "") -> v
 			int(telemetry["six_yard_shot_priority"]),
 			int(telemetry["box_edge_shot_priority"]),
 			int(telemetry["box_run_inside_edge_declines"])
+		]
+	)
+	print(
+		"[TelemetryDetail] %s progressive-attempts-by-role=%s progressive-completions-by-role=%s MID->ST=%d/%d pass-directions-by-zone=%s penalty-area-entries=%d edge-receptions=%d six-yard-receptions=%d shots-by-zone=%s turnovers=%d"
+		% [
+			team_label,
+			JSON.stringify(telemetry["progressive_attempts_by_role"]),
+			JSON.stringify(telemetry["progressive_completions_by_role"]),
+			int(telemetry["mid_to_st_completions"]),
+			int(telemetry["mid_to_st_attempts"]),
+			JSON.stringify(telemetry["pass_directions_by_zone"]),
+			int(telemetry["penalty_area_entries"]),
+			int(telemetry["edge_receptions"]),
+			int(telemetry["six_yard_receptions"]),
+			JSON.stringify(telemetry["shots_by_zone"]),
+			int(telemetry["turnovers"])
 		]
 	)
 
@@ -1451,8 +1578,11 @@ func _resolve_pass(player: FootballPlayer, team: FootballTeam) -> void:
 	ball_in_flight = true
 	ball_on_ground = true
 	ball_flight_phase = "ground_pass"
+	ball_is_restart_delivery = false
+	ball_pass_launch_telemetry = _build_pass_launch_telemetry(player, receiver, team)
 	var telemetry: Dictionary = match_telemetry[player.team_index]
 	telemetry["pass_attempts"] = int(telemetry["pass_attempts"]) + 1
+	_record_pass_selection_metrics(player, receiver, team)
 	ball_shooter_id = player.id
 	ball_keeper_attempted = false
 	last_touch_team_index = player.team_index
@@ -1504,6 +1634,7 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 	telemetry["shots"] = int(telemetry["shots"]) + 1
 	if on_target:
 		telemetry["shots_on_target"] = int(telemetry["shots_on_target"]) + 1
+	_record_shot_zone(player, team)
 	player.record_action(on_target, float(config["match"]["condition_form_change_per_success"]))
 	var goal_center_y := float(field_data["height"]) * 0.5
 	var goal_half_width := float(ball_data["goal_width_px"]) * 0.5
@@ -1523,6 +1654,8 @@ func _resolve_shot(player: FootballPlayer, team: FootballTeam) -> void:
 	ball_in_flight = true
 	ball_on_ground = false
 	ball_flight_phase = "shot"
+	ball_is_restart_delivery = false
+	ball_pass_launch_telemetry.clear()
 	ball_pass_probability = -1.0
 	ball_shooter_id = player.id
 	ball_keeper_attempted = false
@@ -1859,12 +1992,18 @@ func _complete_flight_pass() -> void:
 		return
 	var passer := _find_player_by_id(ball_shooter_id)
 	var receiver := ball_target
+	var is_open_play_pass := not ball_is_restart_delivery
+	var launch_telemetry := ball_pass_launch_telemetry.duplicate(true)
+	ball_is_restart_delivery = false
+	ball_pass_launch_telemetry.clear()
 	var completed := rng.randf() < ball_pass_probability
 	if passer != null:
 		passer.record_action(completed, float(config["match"]["condition_form_change_per_success"]))
 	var team_name := teams[receiver.team_index].team_name
 	if completed:
-		_record_completed_open_play_pass(passer, receiver)
+		_record_completed_pass(
+			passer, receiver, is_open_play_pass, launch_telemetry
+		)
 		_set_last_action("%s pass complete to %s" % [team_name, receiver.player_name], ball_pass_probability, "Pass resolved at reception after physical ball flight.")
 		_set_possession(receiver, true)
 	else:
@@ -2084,11 +2223,15 @@ func _set_possession(player: FootballPlayer, completed_open_play_pass: bool = fa
 		ball_pass_probability = -1.0
 		ball_shooter_id = NO_PLAYER_ID
 		ball_keeper_attempted = false
+		ball_is_restart_delivery = false
+		ball_pass_launch_telemetry.clear()
 		return
 	if previous_team_index >= 0 and previous_team_index != player.team_index:
 		_finish_pass_sequence(teams[previous_team_index], "possession lost")
 		_clear_box_runs(teams[previous_team_index], false)
 		_clear_pair_pass_counts()
+		var turnover_telemetry: Dictionary = match_telemetry[player.team_index]
+		turnover_telemetry["turnovers"] = int(turnover_telemetry["turnovers"]) + 1
 	elif ball_target != null and ball_target.team_index == player.team_index \
 	and ball_owner == null and ball_in_flight and completed_open_play_pass:
 		teams[player.team_index].completed_passes_in_possession += 1
@@ -2112,6 +2255,8 @@ func _set_possession(player: FootballPlayer, completed_open_play_pass: bool = fa
 	ball_pass_probability = -1.0
 	ball_shooter_id = NO_PLAYER_ID
 	ball_keeper_attempted = false
+	ball_is_restart_delivery = false
+	ball_pass_launch_telemetry.clear()
 	ball_position = player.position
 	ball_position_3d = Vector3(ball_position.x, ball_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
 	last_touch_team_index = player.team_index
@@ -2136,30 +2281,97 @@ func _clear_pair_pass_counts() -> void:
 	for pair_counts in pair_pass_counts:
 		pair_counts.clear()
 
-func _record_completed_open_play_pass(passer: FootballPlayer, receiver: FootballPlayer) -> void:
+func _record_completed_pass(
+	passer: FootballPlayer,
+	receiver: FootballPlayer,
+	is_open_play_pass: bool = true,
+	launch_telemetry: Dictionary = {}
+) -> void:
 	if passer == null or receiver == null or passer.team_index != receiver.team_index:
-		push_error("Cannot record a completed open-play pass without a same-team passer and receiver.")
+		push_error("Cannot record a completed pass without a same-team passer and receiver.")
 		return
 	var team_index := passer.team_index
 	var telemetry: Dictionary = match_telemetry[team_index]
 	telemetry["pass_completions"] = int(telemetry["pass_completions"]) + 1
-	var classification := _classify_progressive_pass(passer, receiver)
-	if bool(classification["origin_in_attacking_two_thirds"]):
-		telemetry["attacking_two_thirds_pass_completions"] = \
-			int(telemetry["attacking_two_thirds_pass_completions"]) + 1
-	if bool(classification["progressive"]):
-		telemetry["progressive_completions"] = int(telemetry["progressive_completions"]) + 1
+	if is_open_play_pass:
+		if launch_telemetry.is_empty():
+			launch_telemetry = _build_pass_launch_telemetry(
+				passer, receiver, teams[team_index]
+			)
+		if bool(launch_telemetry["origin_in_attacking_two_thirds"]):
+			telemetry["attacking_two_thirds_pass_completions"] = \
+				int(telemetry["attacking_two_thirds_pass_completions"]) + 1
+		if bool(launch_telemetry["progressive"]):
+			telemetry["progressive_completions"] = int(telemetry["progressive_completions"]) + 1
+			_increment_role_counter(
+				telemetry["progressive_completions_by_role"], passer.tactical_role
+			)
+		var origin_zone := str(launch_telemetry["origin_zone"])
+		var direction_key := str(launch_telemetry["direction_key"])
+		telemetry["pass_directions_by_zone"][origin_zone][direction_key + "_completions"] += 1
+		if origin_zone == "MID" and receiver.tactical_role == "ST":
+			telemetry["mid_to_st_completions"] = int(telemetry["mid_to_st_completions"]) + 1
+		if _is_inside_position_shot_box(receiver.position, teams[team_index], 0.0):
+			telemetry["penalty_area_entries"] = int(telemetry["penalty_area_entries"]) + 1
+		if _distance_to_penalty_area_line(
+			receiver.position, teams[team_index]
+		) <= float(config["decision"]["shot_selection"]["box_edge_margin_px"]):
+			telemetry["edge_receptions"] = int(telemetry["edge_receptions"]) + 1
+		if _is_inside_six_yard_box(receiver.position, teams[team_index]):
+			telemetry["six_yard_receptions"] = int(telemetry["six_yard_receptions"]) + 1
 	var pair_key := _pair_key(passer.id, receiver.id)
 	pair_pass_counts[team_index][pair_key] = int(pair_pass_counts[team_index].get(pair_key, 0)) + 1
-	var pass_text := "[Pass] progressive=%s from-role=%s to-role=%s goal-distance=%.1f->%.1f" % [
-		str(bool(classification["progressive"])).to_lower(),
-		passer.tactical_role,
-		receiver.tactical_role,
-		float(classification["passer_goal_distance"]),
-		float(classification["receiver_goal_distance"])
-	]
-	event_log.append(pass_text)
-	print(pass_text)
+	if is_open_play_pass:
+		var pass_text := "[Pass] progressive=%s from-role=%s to-role=%s goal-distance=%.1f->%.1f" % [
+			str(bool(launch_telemetry["progressive"])).to_lower(),
+			passer.tactical_role,
+			receiver.tactical_role,
+			float(launch_telemetry["passer_goal_distance"]),
+			float(launch_telemetry["receiver_goal_distance"])
+		]
+		event_log.append(pass_text)
+		print(pass_text)
+
+func _record_pass_selection_metrics(
+	passer: FootballPlayer, receiver: FootballPlayer, team: FootballTeam
+) -> void:
+	var telemetry: Dictionary = match_telemetry[passer.team_index]
+	var classification := _classify_progressive_pass(passer, receiver)
+	if bool(classification["progressive"]):
+		_increment_role_counter(telemetry["progressive_attempts_by_role"], passer.tactical_role)
+	var attack_progress := _attack_progress_x(passer.position.x, team)
+	var origin_zone := _attack_zone(attack_progress)
+	var directional_progress := (receiver.position.x - passer.position.x) \
+		* (1.0 if team.attacks_right else -1.0)
+	var direction_key := _pass_direction_key(directional_progress)
+	telemetry["pass_directions_by_zone"][origin_zone][direction_key + "_attempts"] += 1
+	if origin_zone == "MID" and receiver.tactical_role == "ST":
+		telemetry["mid_to_st_attempts"] = int(telemetry["mid_to_st_attempts"]) + 1
+
+func _increment_role_counter(role_counts: Dictionary, role: String) -> void:
+	role_counts[role] = int(role_counts.get(role, 0)) + 1
+
+func _pass_direction_key(directional_progress: float) -> String:
+	if directional_progress > 0.01:
+		return "forward"
+	if directional_progress < -0.01:
+		return "backward"
+	return "lateral"
+
+func _record_shot_zone(player: FootballPlayer, team: FootballTeam) -> void:
+	var telemetry: Dictionary = match_telemetry[player.team_index]
+	var shots_by_zone: Dictionary = telemetry["shots_by_zone"]
+	var attack_progress := _attack_progress_x(player.position.x, team)
+	shots_by_zone[_attack_zone(attack_progress)] = \
+		int(shots_by_zone[_attack_zone(attack_progress)]) + 1
+	if _is_inside_position_shot_box(player.position, team, 0.0):
+		shots_by_zone["penalty_area"] = int(shots_by_zone["penalty_area"]) + 1
+	if _distance_to_penalty_area_line(
+		player.position, team
+	) <= float(config["decision"]["shot_selection"]["box_edge_margin_px"]):
+		shots_by_zone["edge"] = int(shots_by_zone["edge"]) + 1
+	if _is_inside_six_yard_box(player.position, team):
+		shots_by_zone["six_yard"] = int(shots_by_zone["six_yard"]) + 1
 
 func _classify_progressive_pass(passer: FootballPlayer, receiver: FootballPlayer) -> Dictionary:
 	var team: FootballTeam = teams[passer.team_index]
@@ -2175,6 +2387,18 @@ func _classify_progressive_pass(passer: FootballPlayer, receiver: FootballPlayer
 		"passer_goal_distance": passer_goal_distance,
 		"receiver_goal_distance": receiver_goal_distance
 	}
+
+func _build_pass_launch_telemetry(
+	passer: FootballPlayer, receiver: FootballPlayer, team: FootballTeam
+) -> Dictionary:
+	var launch_telemetry := _classify_progressive_pass(passer, receiver)
+	var directional_progress := (receiver.position.x - passer.position.x) \
+		* (1.0 if team.attacks_right else -1.0)
+	launch_telemetry["origin_zone"] = _attack_zone(
+		_attack_progress_x(passer.position.x, team)
+	)
+	launch_telemetry["direction_key"] = _pass_direction_key(directional_progress)
+	return launch_telemetry
 
 func _clear_team_shot_cooldowns(team: FootballTeam) -> void:
 	for player in team.players:
@@ -2204,11 +2428,15 @@ func _choose_receiver(player: FootballPlayer, team: FootballTeam) -> FootballPla
 	var pair_limit := int(config["decision"]["pair_pass_limit"])
 	var team_pairs: Dictionary = pair_pass_counts[player.team_index]
 	var blocked_pair_candidates: Array[FootballPlayer] = []
+	var carrier_zone := _attack_zone(carrier_attack_x)
+	var carrier_role_group := _pass_carrier_weight_group(player.tactical_role)
+	var role_zone_weights: Dictionary = pass_data["role_zone_pass_weights"][carrier_role_group][carrier_zone]
 	var midfield_progression_context := _is_midfield_role(player.tactical_role) \
 		and carrier_attack_x >= (1.0 / 3.0) and carrier_attack_x < (2.0 / 3.0)
 	var forward_search_range := float(pass_data["midfield_forward_search_range_px"])
 	var forward_min_open_distance := float(pass_data["midfield_forward_min_open_distance_px"])
 	var has_viable_forward_receiver := false
+	var has_viable_defensive_outlet := false
 	var has_progressive_alternative := false
 	for candidate in team.players:
 		if candidate == player:
@@ -2227,6 +2455,16 @@ func _choose_receiver(player: FootballPlayer, team: FootballTeam) -> FootballPla
 			if forward_defender != null \
 			and candidate.position.distance_to(forward_defender.position) >= forward_min_open_distance:
 				has_viable_forward_receiver = true
+		if carrier_role_group == "defensive" and carrier_zone == "DEF" \
+		and candidate_progress > 0.0 and candidate_distance <= forward_search_range \
+		and (_is_midfield_role(candidate.tactical_role) \
+			or _is_wide_receiver_role(candidate.tactical_role)):
+			var outlet_defender := _nearest_opponent_to_position(
+				candidate.position, teams[1 - candidate.team_index]
+			)
+			if outlet_defender != null \
+			and candidate.position.distance_to(outlet_defender.position) >= forward_min_open_distance:
+				has_viable_defensive_outlet = true
 	for candidate in team.players:
 		if candidate == player:
 			continue
@@ -2256,13 +2494,24 @@ func _choose_receiver(player: FootballPlayer, team: FootballTeam) -> FootballPla
 			nearby_multiplier += float(tackle_data["pressure_nearby_bonus"]) / maxf(float(pass_data["nearby_weight"]), 1.0)
 		var distance_ratio := clampf(distance / float(pass_data["maximum_candidate_distance"]), 0.0, 1.0)
 		var score := (1.0 - distance_ratio) * float(pass_data["nearby_weight"]) * nearby_multiplier
+		if not is_pressured and has_viable_defensive_outlet \
+		and carrier_role_group == "defensive" and carrier_zone == "DEF" \
+		and forward_progress <= 0.0:
+			score *= float(role_zone_weights["recycle_nearby_multiplier"])
+		var edge_margin := float(config["decision"]["shot_selection"]["box_edge_margin_px"])
+		if forward_progress > 0.0 and _is_forward_receiver_role(candidate.tactical_role) \
+		and distance <= forward_search_range and defender_distance >= forward_min_open_distance \
+		and _is_inside_or_on_shot_box_edge(candidate.position, team, edge_margin):
+			score *= float(role_zone_weights["box_edge_nearby_multiplier"])
 		score += clampf(defender_distance / float(pass_data["openness_distance"]), 0.0, 1.0) * float(pass_data["openness_weight"])
 		score += support_angle_quality * float(pass_data["support_angle_weight"])
 		var progress_ratio := clampf(forward_progress / field_width, -1.0, 1.0)
 		var progression_weight := float(pass_data["direct_progression_weight"]) if direct_mode else float(pass_data["possession_progression_weight"])
 		if is_pressured and not direct_mode:
 			progression_weight *= float(tackle_data["pressure_progression_multiplier"])
-		score += progress_ratio * progression_weight * float(role_profile["progression_multiplier"])
+		score += progress_ratio * progression_weight \
+			* float(role_profile["progression_multiplier"]) \
+			* float(role_zone_weights["progression_multiplier"])
 		var backward_penalty := float(pass_data["backward_pass_penalty"])
 		if is_pressured and not direct_mode:
 			backward_penalty *= float(tackle_data["pressure_backward_penalty_multiplier"])
@@ -2289,11 +2538,20 @@ func _choose_receiver(player: FootballPlayer, team: FootballTeam) -> FootballPla
 			and defender_distance >= float(pass_data["box_runner_min_open_distance"])
 		if is_arrived_box_runner:
 			score += float(pass_data["box_runner_bonus"])
-		if midfield_progression_context and has_viable_forward_receiver \
-		and _is_forward_receiver_role(candidate.tactical_role) \
+		if _is_forward_receiver_role(candidate.tactical_role) \
 		and forward_progress > 0.0 and distance <= forward_search_range \
 		and defender_distance >= forward_min_open_distance:
-			score += float(pass_data["midfield_forward_receiver_bonus"])
+			var receiver_weight_key := "forward_receiver_multiplier" \
+				if _pass_receiver_weight_group(candidate.tactical_role) == "forward" \
+				else "wide_receiver_multiplier"
+			score += float(pass_data["midfield_forward_receiver_bonus"]) \
+				* float(role_zone_weights[receiver_weight_key])
+		if carrier_role_group == "defensive" and carrier_zone == "DEF" \
+		and forward_progress > 0.0 and distance <= forward_search_range \
+		and defender_distance >= forward_min_open_distance \
+		and _is_midfield_role(candidate.tactical_role):
+			score += float(pass_data["midfield_forward_receiver_bonus"]) \
+				* float(role_zone_weights["midfield_receiver_multiplier"])
 		score += _channel_receiver_bonus(team, candidate)
 		if score > best_score or (is_equal_approx(score, best_score) and best_player != null and candidate.id < best_player.id):
 			best_score = score
@@ -2481,7 +2739,10 @@ func _is_forward_role(role: String) -> bool:
 	return ["ST", "CF"].has(role)
 
 func _is_forward_receiver_role(role: String) -> bool:
-	return ["ST", "CF", "W", "LW", "RW", "LM", "RM"].has(role)
+	return _is_forward_role(role) or _is_wide_receiver_role(role)
+
+func _is_wide_receiver_role(role: String) -> bool:
+	return ["W", "LW", "RW", "LM", "RM"].has(role)
 
 func _is_midfield_role(role: String) -> bool:
 	return ["CM", "LCM", "RCM", "DM", "CDM", "LDM", "RDM", "AM", "CAM", "LAM", "RAM"].has(role)
@@ -2492,6 +2753,25 @@ func _pass_role_profile(role: String) -> String:
 	if ["LW", "RW", "LM", "RM", "CAM", "LAM", "RAM", "ST", "CF"].has(role):
 		return "attacking"
 	return "central"
+
+func _pass_carrier_weight_group(role: String) -> String:
+	if _is_midfield_role(role):
+		return "midfield"
+	if _is_forward_role(role):
+		return "forward"
+	if _is_forward_receiver_role(role):
+		return "wide"
+	return "defensive"
+
+func _pass_receiver_weight_group(role: String) -> String:
+	return "forward" if _is_forward_role(role) else "wide"
+
+func _attack_zone(attack_progress: float) -> String:
+	if attack_progress < (1.0 / 3.0):
+		return "DEF"
+	if attack_progress < (2.0 / 3.0):
+		return "MID"
+	return "ATT"
 
 func get_team_play_mode(team_index: int) -> String:
 	if team_index < 0 or team_index >= teams.size():
@@ -2906,6 +3186,8 @@ func _begin_restart(
 	ball_pass_probability = -1.0
 	ball_shooter_id = NO_PLAYER_ID
 	ball_keeper_attempted = false
+	ball_is_restart_delivery = false
+	ball_pass_launch_telemetry.clear()
 	ball_owner = null
 	ball_target = null
 	decision_clock = 0.0
@@ -2945,6 +3227,8 @@ func _execute_pending_restart() -> bool:
 	restart_delay_remaining = 0.0
 	restart_crossing_position = Vector2.ZERO
 	ball_position = from_position
+	ball_is_restart_delivery = false
+	ball_pass_launch_telemetry.clear()
 	ball_owner = null
 	ball_target = receiver
 	ball_position_3d = Vector3(from_position.x, from_position.y, float(config["match"]["ball_flight"]["ball_radius_px"]))
@@ -2954,6 +3238,9 @@ func _execute_pending_restart() -> bool:
 	ball_pass_probability = 1.0
 	ball_shooter_id = taker.id
 	ball_keeper_attempted = false
+	ball_is_restart_delivery = true
+	var restart_telemetry: Dictionary = match_telemetry[taker.team_index]
+	restart_telemetry["pass_attempts"] = int(restart_telemetry["pass_attempts"]) + 1
 	var direction := receiver.position - from_position
 	if direction.length_squared() < 1.0:
 		direction = Vector2(1.0 if teams[executed_team].attacks_right else -1.0, 0.0)

@@ -279,7 +279,7 @@
     "tick_beacon_interval": 15,
     "state_hash_interval_ticks": 30,
     "snapshot_interval_ticks": 300,
-    "snapshot_version": 7,
+    "snapshot_version": 8,
     "maximum_pending_commands": 128,
     "reconnect_enabled": true,
     "reconnect_timeout_seconds": 30.0,
@@ -331,6 +331,28 @@
       "midfield_forward_search_range_px": 640.0,
       "midfield_forward_min_open_distance_px": 50.0,
       "midfield_forward_receiver_bonus": 60.0,
+      "role_zone_pass_weights": {
+        "defensive": {
+          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 1.0, "midfield_receiver_multiplier": 1.0, "recycle_nearby_multiplier": 0.6, "box_edge_nearby_multiplier": 1.0},
+          "MID": {"progression_multiplier": 1.1, "forward_receiver_multiplier": 0.5, "wide_receiver_multiplier": 0.5, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "ATT": {"progression_multiplier": 1.2, "forward_receiver_multiplier": 0.75, "wide_receiver_multiplier": 0.75, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.1}
+        },
+        "midfield": {
+          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.25, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "MID": {"progression_multiplier": 1.25, "forward_receiver_multiplier": 1.25, "wide_receiver_multiplier": 1.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.1},
+          "ATT": {"progression_multiplier": 1.5, "forward_receiver_multiplier": 1.5, "wide_receiver_multiplier": 1.25, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.25}
+        },
+        "wide": {
+          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.25, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "MID": {"progression_multiplier": 1.1, "forward_receiver_multiplier": 0.5, "wide_receiver_multiplier": 0.75, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "ATT": {"progression_multiplier": 1.25, "forward_receiver_multiplier": 0.75, "wide_receiver_multiplier": 1.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.15}
+        },
+        "forward": {
+          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "MID": {"progression_multiplier": 1.1, "forward_receiver_multiplier": 0.5, "wide_receiver_multiplier": 0.5, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "ATT": {"progression_multiplier": 1.2, "forward_receiver_multiplier": 1.0, "wide_receiver_multiplier": 0.75, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.15}
+        }
+      },
       "minimum_build_up_passes_before_shot": 2
     }
   },
