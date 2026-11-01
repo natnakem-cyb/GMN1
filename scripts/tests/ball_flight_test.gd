@@ -13,7 +13,11 @@ func _run() -> void:
 	if not _test_box_run_edge_eligibility():
 		quit(1)
 		return
-	print("PASS: multi-tick pass, both goal directions, post collision, overbar exit, deterministic trajectories, and inclusive box-edge shot eligibility.")
+	if not _test_pass_launch_clearance() or not _test_shot_launch_clearance() \
+	or not _test_launch_point_interception_guard() or not _test_kicker_clearance_window():
+		quit(1)
+		return
+	print("PASS: multi-tick pass, both goal directions, post collision, overbar exit, deterministic trajectories, inclusive box-edge shot eligibility, pass/shot launch clearance, launch-point interception guard, and kicker-clearance window boundaries.")
 	quit(0)
 
 func _new_simulation() -> MatchSimulation:
@@ -48,6 +52,154 @@ func _test_pass_reception() -> bool:
 	if not passed:
 		push_error("Ball flight test failed: ground pass did not reach the receiver after multiple ticks.")
 	simulation.free()
+	return passed
+
+func _expected_kicker_clearance_px(simulation: MatchSimulation) -> float:
+	var field_data: Dictionary = simulation.config["field"]
+	var ball_data: Dictionary = simulation.config["match"]["ball_flight"]
+	var margin_px := float(ball_data["kicker_clearance_margin_m"]) / float(ball_data["metres_per_pixel"])
+	return float(field_data["player_radius"]) + float(ball_data["ball_radius_px"]) + margin_px
+
+func _test_pass_launch_clearance() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	for defender in simulation.teams[1].players:
+		defender.position = Vector2(-500.0, -500.0)
+	var passer: FootballPlayer = simulation.teams[0].players[0]
+	simulation._set_possession(passer)
+	simulation._resolve_pass(passer, simulation.teams[0])
+	var receiver: FootballPlayer = simulation.ball_target
+	var need := _expected_kicker_clearance_px(simulation)
+	var dist := simulation.ball_position.distance_to(passer.position)
+	var launched := receiver != null and simulation.ball_in_flight \
+		and simulation.ball_flight_phase == "ground_pass" \
+		and simulation.ball_kicker_clearance_id == passer.id \
+		and dist >= need - 0.001
+	print("[Test] pass launch clearance dist=%.3fpx need=%.3fpx" % [dist, need])
+	if not launched:
+		push_error("Ball flight test failed: pass did not launch outside the required kicker clearance.")
+		simulation.free()
+		return false
+	simulation.ball_pass_probability = 1.0
+	var ticks := 0
+	while ticks < 100 and simulation.ball_owner == null:
+		simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
+		ticks += 1
+	var received_by_target := simulation.ball_owner == receiver
+	simulation.free()
+	if not received_by_target:
+		push_error("Ball flight test failed: launched ground pass did not resolve to its receiver.")
+	return received_by_target
+
+func _test_shot_launch_clearance() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	var shooter: FootballPlayer = simulation.teams[0].players[0]
+	shooter.position = Vector2(float(simulation.config["field"]["width"]) - 150.0, float(simulation.config["field"]["height"]) * 0.5)
+	simulation._set_possession(shooter)
+	for keeper in simulation.teams[1].players:
+		if keeper.tactical_role == "GK":
+			keeper.position = Vector2(float(simulation.config["field"]["width"]) - 20.0, float(simulation.config["field"]["height"]) * 0.5)
+		else:
+			keeper.position = Vector2(-500.0, -500.0)
+	simulation._resolve_shot(shooter, simulation.teams[0])
+	var need := _expected_kicker_clearance_px(simulation)
+	var dist := simulation.ball_position.distance_to(shooter.position)
+	var passed := simulation.ball_in_flight and simulation.ball_flight_phase == "shot" \
+		and simulation.ball_kicker_clearance_id == shooter.id and dist >= need - 0.001
+	print("[Test] shot launch clearance dist=%.3fpx need=%.3fpx" % [dist, need])
+	simulation.free()
+	if not passed:
+		push_error("Ball flight test failed: shot did not launch outside the required kicker clearance.")
+	return passed
+
+func _test_launch_point_interception_guard() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	var passer: FootballPlayer = simulation.teams[0].players[0]
+	var receiver: FootballPlayer = simulation.teams[0].players[1]
+	receiver.position = passer.position + Vector2(300.0, 0.0)
+	for i in range(2, simulation.teams[0].players.size()):
+		simulation.teams[0].players[i].position = Vector2(-500.0, -500.0 - float(i))
+	var close_defender: FootballPlayer = simulation.teams[1].players[0]
+	close_defender.position = passer.position + Vector2(3.0, 0.0)
+	for i in range(1, simulation.teams[1].players.size()):
+		simulation.teams[1].players[i].position = Vector2(-500.0, -500.0 - float(i))
+	simulation._set_possession(passer)
+	simulation._resolve_pass(passer, simulation.teams[0])
+	simulation.ball_pass_probability = 1.0
+	var max_ticks := int(simulation.config["match"]["ball_flight"]["kicker_contact_ignore_max_ticks"])
+	var ticks := 0
+	var instant_intercept := false
+	while ticks < 5 and simulation.ball_owner == null:
+		simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
+		ticks += 1
+		if simulation.ball_owner == close_defender and ticks <= max_ticks:
+			instant_intercept = true
+			break
+	var passed := not instant_intercept and simulation.ball_in_flight
+	simulation.free()
+	if not passed:
+		push_error("Ball flight test failed: a defender at the launch point intercepted immediately or the pass did not remain in flight.")
+	return passed
+
+func _test_kicker_clearance_window() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	var kicker: FootballPlayer = simulation.teams[0].players[0]
+	var ball_data: Dictionary = simulation.config["match"]["ball_flight"]
+	var max_ticks := int(ball_data["kicker_contact_ignore_max_ticks"])
+	var clear_radius := float(simulation.config["field"]["player_radius"]) \
+		+ float(simulation.config["field"]["ball_radius"])
+	var ball_radius := float(ball_data["ball_radius_px"])
+	var passed := true
+
+	simulation.ball_kicker_clearance_id = kicker.id
+	simulation.ball_kicker_clearance_ticks = max_ticks - 1
+	simulation.ball_position = kicker.position + Vector2(clear_radius, 0.0)
+	simulation.ball_position_3d = Vector3(simulation.ball_position.x, simulation.ball_position.y, ball_radius)
+	simulation.ball_velocity_3d = Vector3.ZERO
+	simulation.ball_velocity = Vector2.ZERO
+	simulation.ball_in_flight = true
+	simulation.ball_on_ground = false
+	simulation.ball_flight_phase = "shot"
+	simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
+	passed = passed and simulation.ball_kicker_clearance_ticks >= max_ticks \
+		and simulation.ball_kicker_clearance_id == kicker.id
+
+	simulation.ball_kicker_clearance_id = kicker.id
+	simulation.ball_kicker_clearance_ticks = max_ticks - 2
+	simulation.ball_position = kicker.position + Vector2(clear_radius + 1.0, 0.0)
+	simulation.ball_position_3d = Vector3(simulation.ball_position.x, simulation.ball_position.y, ball_radius)
+	simulation.ball_velocity_3d = Vector3.ZERO
+	simulation.ball_velocity = Vector2.ZERO
+	simulation.ball_in_flight = true
+	simulation.ball_on_ground = false
+	simulation.ball_flight_phase = "shot"
+	simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
+	passed = passed and simulation.ball_kicker_clearance_ticks < max_ticks \
+		and simulation.ball_kicker_clearance_id == kicker.id
+
+	simulation.ball_kicker_clearance_id = kicker.id
+	simulation.ball_kicker_clearance_ticks = max_ticks - 1
+	simulation.ball_position = kicker.position + Vector2(clear_radius + 1.0, 0.0)
+	simulation.ball_position_3d = Vector3(simulation.ball_position.x, simulation.ball_position.y, ball_radius)
+	simulation.ball_velocity_3d = Vector3.ZERO
+	simulation.ball_velocity = Vector2.ZERO
+	simulation.ball_in_flight = true
+	simulation.ball_on_ground = false
+	simulation.ball_flight_phase = "shot"
+	simulation._advance_ball(float(simulation.config["match"]["tick_seconds"]))
+	passed = passed and simulation.ball_kicker_clearance_ticks >= max_ticks \
+		and simulation.ball_kicker_clearance_id == -1
+
+	simulation.free()
+	if not passed:
+		push_error("Ball flight test failed: kicker clearance did not require distance > radius AND ticks >= max, with strict distance boundary.")
 	return passed
 
 func _test_box_run_edge_eligibility() -> bool:
