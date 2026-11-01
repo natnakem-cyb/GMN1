@@ -333,24 +333,24 @@
       "midfield_forward_receiver_bonus": 60.0,
       "role_zone_pass_weights": {
         "defensive": {
-          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 1.0, "midfield_receiver_multiplier": 1.0, "recycle_nearby_multiplier": 0.6, "box_edge_nearby_multiplier": 1.0},
-          "MID": {"progression_multiplier": 1.1, "forward_receiver_multiplier": 0.5, "wide_receiver_multiplier": 0.5, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
-          "ATT": {"progression_multiplier": 1.2, "forward_receiver_multiplier": 0.75, "wide_receiver_multiplier": 0.75, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.1}
+          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "MID": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "ATT": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0}
         },
         "midfield": {
-          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.25, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
-          "MID": {"progression_multiplier": 1.25, "forward_receiver_multiplier": 1.25, "wide_receiver_multiplier": 1.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.1},
-          "ATT": {"progression_multiplier": 1.5, "forward_receiver_multiplier": 1.5, "wide_receiver_multiplier": 1.25, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.25}
+          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "MID": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 1.25, "wide_receiver_multiplier": 1.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "ATT": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0}
         },
         "wide": {
-          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.25, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
-          "MID": {"progression_multiplier": 1.1, "forward_receiver_multiplier": 0.5, "wide_receiver_multiplier": 0.75, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
-          "ATT": {"progression_multiplier": 1.25, "forward_receiver_multiplier": 0.75, "wide_receiver_multiplier": 1.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.15}
+          "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "MID": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "ATT": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0}
         },
         "forward": {
           "DEF": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
-          "MID": {"progression_multiplier": 1.1, "forward_receiver_multiplier": 0.5, "wide_receiver_multiplier": 0.5, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
-          "ATT": {"progression_multiplier": 1.2, "forward_receiver_multiplier": 1.0, "wide_receiver_multiplier": 0.75, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.15}
+          "MID": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0},
+          "ATT": {"progression_multiplier": 1.0, "forward_receiver_multiplier": 0.0, "wide_receiver_multiplier": 0.0, "midfield_receiver_multiplier": 0.0, "recycle_nearby_multiplier": 1.0, "box_edge_nearby_multiplier": 1.0}
         }
       },
       "minimum_build_up_passes_before_shot": 2

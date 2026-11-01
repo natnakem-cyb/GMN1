@@ -19,7 +19,7 @@ func _run() -> void:
 		return
 	if not _test_box_edge_boundaries() or not _test_six_yard_shot_priority() \
 	or not _test_pair_pass_limit() or not _test_midfield_forward_preference() \
-	or not _test_defensive_outlet_preference() or not _test_box_edge_receiver_weight() \
+	or not _test_role_zone_weights_are_scoped() \
 	or not _test_progressive_pass_telemetry() \
 	or not _test_progressive_completion_uses_launch_geometry() \
 	or not _test_restart_delivery_telemetry():
@@ -288,87 +288,33 @@ func _test_midfield_forward_preference() -> bool:
 	simulation.free()
 	return true
 
-func _test_box_edge_receiver_weight() -> bool:
+func _test_role_zone_weights_are_scoped() -> bool:
 	var simulation := _new_simulation()
 	if simulation == null:
 		return false
-	var team: FootballTeam = simulation.teams[0]
-	team.attacks_right = true
-	var carrier := _player_with_role(team, ["CM", "LCM", "RCM"])
-	var forward := _player_with_role(team, ["ST", "CF"])
-	if carrier == null or forward == null:
-		simulation.free()
-		return false
-	carrier.position = Vector2(700.0, 300.0)
-	forward.position = Vector2(820.0, 300.0)
-	for player in team.players:
-		if player != carrier and player != forward:
-			player.position = Vector2(-500.0, -500.0)
-	for defender in simulation.teams[1].players:
-		defender.position = Vector2(-1000.0, -1000.0)
-	var weights: Dictionary = simulation.config["decision"]["pass_selection"] \
-		["role_zone_pass_weights"]["midfield"]["ATT"]
-	var configured_multiplier := float(weights["box_edge_nearby_multiplier"])
-	weights["box_edge_nearby_multiplier"] = 1.0
-	var baseline_receiver := simulation._choose_receiver(carrier, team)
-	var baseline_score := _preferred_pass_debug_score(simulation.preferred_pass_debug)
-	weights["box_edge_nearby_multiplier"] = configured_multiplier
-	var weighted_receiver := simulation._choose_receiver(carrier, team)
-	var weighted_score := _preferred_pass_debug_score(simulation.preferred_pass_debug)
-	var passed := simulation._distance_to_penalty_area_line(forward.position, team) == 30.0 \
-		and baseline_receiver == forward and weighted_receiver == forward \
-		and weighted_score > baseline_score
+	var table: Dictionary = simulation.config["decision"]["pass_selection"] \
+		["role_zone_pass_weights"]
+	for role_group in ["defensive", "midfield", "wide", "forward"]:
+		for zone in ["DEF", "MID", "ATT"]:
+			var weights: Dictionary = table[role_group][zone]
+			var is_approved_context: bool = role_group == "midfield" and zone == "MID"
+			var expected_forward_weight: float = 1.25 if is_approved_context else 0.0
+			var expected_wide_weight: float = 1.0 if is_approved_context else 0.0
+			if not is_equal_approx(float(weights["progression_multiplier"]), 1.0) \
+			or not is_equal_approx(float(weights["box_edge_nearby_multiplier"]), 1.0) \
+			or not is_equal_approx(float(weights["recycle_nearby_multiplier"]), 1.0) \
+			or not is_equal_approx(float(weights["midfield_receiver_multiplier"]), 0.0) \
+			or not is_equal_approx(
+				float(weights["forward_receiver_multiplier"]), expected_forward_weight
+			) \
+			or not is_equal_approx(
+				float(weights["wide_receiver_multiplier"]), expected_wide_weight
+			):
+				simulation.free()
+				push_error("Role-zone weights test failed: unreviewed scoring behavior is enabled.")
+				return false
 	simulation.free()
-	if not passed:
-		push_error("Pass selection test failed: safe forward receiver in the existing box-edge band did not gain its configured score preference.")
-	return passed
-
-func _test_defensive_outlet_preference() -> bool:
-	var simulation := _new_simulation()
-	if simulation == null:
-		return false
-	var team: FootballTeam = simulation.teams[0]
-	team.attacks_right = true
-	var carrier := _player_with_role(team, ["LCB", "RCB", "CB"])
-	var midfielder := _player_with_role(team, ["CM", "LCM", "RCM"])
-	var winger := _player_with_role(team, ["LW", "RW", "W"])
-	var goalkeeper := _player_with_role(team, ["GK"])
-	if carrier == null or midfielder == null or winger == null or goalkeeper == null:
-		simulation.free()
-		return false
-	carrier.position = Vector2(200.0, 300.0)
-	midfielder.position = Vector2(350.0, 300.0)
-	winger.position = Vector2(330.0, 420.0)
-	goalkeeper.position = Vector2(160.0, 300.0)
-	for player in team.players:
-		if player != carrier and player != midfielder and player != winger \
-		and player != goalkeeper:
-			player.position = Vector2(-500.0, -500.0)
-	for defender in simulation.teams[1].players:
-		defender.position = Vector2(-1000.0, -1000.0)
-	var forward_choice := simulation._choose_receiver(carrier, team)
-	midfielder.position = Vector2(-500.0, -500.0)
-	var wide_choice := simulation._choose_receiver(carrier, team)
-	winger.position = Vector2(-500.0, -500.0)
-	var safe_fallback := simulation._choose_receiver(carrier, team)
-	midfielder.position = Vector2(350.0, 300.0)
-	simulation.teams[1].players[0].position = midfielder.position + Vector2(1.0, 0.0)
-	var marked_forward_choice := simulation._choose_receiver(carrier, team)
-	var passed := forward_choice == midfielder and wide_choice == winger \
-		and safe_fallback == goalkeeper \
-		and marked_forward_choice == goalkeeper
-	simulation.free()
-	if not passed:
-		push_error("Pass selection test failed: defensive carrier did not prefer a viable MID/W outlet or retain a safe recycle when those outlets were unavailable or marked.")
-	return passed
-
-func _preferred_pass_debug_score(debug_text: String) -> float:
-	var score_marker := "score "
-	var score_start := debug_text.find(score_marker)
-	if score_start < 0:
-		return -INF
-	var score_text := debug_text.substr(score_start + score_marker.length()).split(",")[0]
-	return score_text.to_float()
+	return true
 
 func _test_progressive_pass_telemetry() -> bool:
 	var first := _new_simulation()
