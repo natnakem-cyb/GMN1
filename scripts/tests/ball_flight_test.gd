@@ -17,7 +17,12 @@ func _run() -> void:
 	or not _test_launch_point_interception_guard() or not _test_kicker_clearance_window():
 		quit(1)
 		return
-	print("PASS: multi-tick pass, both goal directions, post collision, overbar exit, deterministic trajectories, inclusive box-edge shot eligibility, pass/shot launch clearance, launch-point interception guard, and kicker-clearance window boundaries.")
+	if not _test_box_edge_boundaries() or not _test_six_yard_shot_priority() \
+	or not _test_pair_pass_limit() or not _test_midfield_forward_preference() \
+	or not _test_progressive_pass_telemetry():
+		quit(1)
+		return
+	print("PASS: ball-flight regressions, inclusive mirrored box-edge eligibility, six-yard shot priority, pair repetition limit, and progressive-pass classification/telemetry.")
 	quit(0)
 
 func _new_simulation() -> MatchSimulation:
@@ -28,6 +33,294 @@ func _new_simulation() -> MatchSimulation:
 		return null
 	simulation.start_match()
 	return simulation
+
+func _player_with_role(team: FootballTeam, roles: Array[String]) -> FootballPlayer:
+	for player in team.players:
+		if roles.has(player.tactical_role):
+			return player
+	return null
+
+func _test_box_edge_boundaries() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	var field: Dictionary = simulation.config["field"]
+	var edge_margin := float(simulation.config["decision"]["shot_selection"]["box_edge_margin_px"])
+	var team: FootballTeam = simulation.teams[0]
+	var shooter := _player_with_role(team, ["ST", "CF"])
+	if shooter == null:
+		simulation.free()
+		return false
+	shooter.tactical_role = "ST"
+	shooter.box_run_active = true
+	team.completed_passes_in_possession = int(simulation.config["decision"]["pass_selection"]["minimum_build_up_passes_before_shot"])
+	for defender in simulation.teams[1].players:
+		defender.position = Vector2(-500.0, -500.0)
+	var passed := true
+	for attacks_right in [true, false]:
+		team.attacks_right = attacks_right
+		var line_x := float(field["width"]) - float(field["penalty_area_depth"]) \
+			if attacks_right else float(field["penalty_area_depth"])
+		var outside_x := line_x - edge_margin - 0.1 if attacks_right else line_x + edge_margin + 0.1
+		shooter.position = Vector2(outside_x, float(field["height"]) * 0.5)
+		shooter.box_run_target = shooter.position - Vector2(70.0, 0.0)
+		var outside_distance := simulation._distance_to_penalty_area_line(shooter.position, team)
+		var outside_declined := not simulation._box_run_shot_ready(shooter, team) \
+			and str(simulation.event_log.back()).contains("box run not reached") \
+			and not simulation._is_inside_or_on_shot_box_edge(shooter.position, team, edge_margin)
+		shooter.box_run_active = false
+		var outside_rules_allow := simulation._should_shoot(shooter, team)
+		shooter.box_run_active = true
+		var event_count := simulation.event_log.size()
+		shooter.position.x = line_x - edge_margin if attacks_right else line_x + edge_margin
+		shooter.box_run_target = shooter.position - Vector2(70.0, 0.0)
+		var line_distance := simulation._distance_to_penalty_area_line(shooter.position, team)
+		var edge_eligible := simulation._is_inside_or_on_shot_box_edge(shooter.position, team, edge_margin) \
+			and simulation._box_run_shot_ready(shooter, team) \
+			and simulation._should_shoot(shooter, team) \
+			and simulation.event_log.size() == event_count
+		passed = passed and is_equal_approx(outside_distance, edge_margin + 0.1) \
+			and outside_declined and outside_rules_allow \
+			and is_equal_approx(line_distance, edge_margin) and edge_eligible
+	var telemetry: Dictionary = simulation.get_match_telemetry()["teams"][0]
+	team.attacks_right = true
+	shooter.position = Vector2(
+		float(field["width"]) - float(field["penalty_area_depth"]) - edge_margin,
+		float(field["height"]) * 0.5
+	)
+	shooter.box_run_target = shooter.position - Vector2(70.0, 0.0)
+	shooter.box_run_active = true
+	shooter.shot_cooldown_active = false
+	simulation.ball_owner = shooter
+	simulation.ball_target = null
+	simulation.ball_position = shooter.position
+	simulation.ball_in_flight = false
+	simulation.ball_flight_phase = "none"
+	simulation._resolve_next_action()
+	var box_edge_priority_seen := false
+	for event in simulation.event_log:
+		if event.contains("box-edge shot priority"):
+			box_edge_priority_seen = true
+	telemetry = simulation.get_match_telemetry()["teams"][0]
+	passed = passed and int(telemetry["box_run_inside_edge_declines"]) == 0 \
+		and int(telemetry["box_edge_shot_priority"]) == 1 \
+		and box_edge_priority_seen and simulation.ball_flight_phase == "shot"
+	simulation.free()
+	if not passed:
+		push_error("Shot selection test failed: 30.1px outside rules or mirrored inclusive 30.0px edge behavior changed.")
+	return passed
+
+func _test_six_yard_shot_priority() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	var field: Dictionary = simulation.config["field"]
+	var decision: Dictionary = simulation.config["decision"]
+	var depth := float(decision["six_yard_depth_px"])
+	var lateral_half := float(decision["six_yard_height_px"]) * 0.5
+	var team: FootballTeam = simulation.teams[0]
+	var passed := depth == 50.0 and is_equal_approx(float(decision["six_yard_height_px"]), 136.31) \
+		and depth < float(field["penalty_area_depth"]) \
+		and float(decision["six_yard_height_px"]) < float(field["penalty_area_height"])
+	for attacks_right in [true, false]:
+		team.attacks_right = attacks_right
+		var goal_x := float(field["width"]) if attacks_right else 0.0
+		var boundary_position := Vector2(
+			goal_x - depth if attacks_right else goal_x + depth,
+			float(field["height"]) * 0.5 + lateral_half
+		)
+		var boundary_inside := simulation._is_inside_six_yard_box(boundary_position, team)
+		var outside_inside := simulation._is_inside_six_yard_box(
+			boundary_position + Vector2(-0.1 if attacks_right else 0.1, 0.0), team
+		)
+		passed = passed and boundary_inside and not outside_inside
+	var striker := _player_with_role(team, ["ST"])
+	if striker == null:
+		simulation.free()
+		return false
+	striker.tactical_role = "ST"
+	for defender in simulation.teams[1].players:
+		defender.position = Vector2(-500.0, -500.0)
+	for attacks_right in [true, false]:
+		team.attacks_right = attacks_right
+		striker.tactical_role = "ST" if attacks_right else "RW"
+		striker.position = Vector2(
+			float(field["width"]) - 40.0 if attacks_right else 40.0,
+			float(field["height"]) * 0.5
+		)
+		team.completed_passes_in_possession = 0
+		striker.shot_cooldown_active = false
+		simulation.ball_owner = striker
+		simulation.ball_target = null
+		simulation.ball_position = striker.position
+		simulation.ball_in_flight = false
+		simulation.ball_flight_phase = "none"
+		simulation._resolve_next_action()
+		passed = passed and simulation.ball_flight_phase == "shot" \
+			and simulation.ball_target == null
+	var telemetry: Dictionary = simulation.get_match_telemetry()["teams"][0]
+	var priority_event_seen := false
+	for event in simulation.event_log:
+		if event.contains("six-yard shot priority"):
+			priority_event_seen = true
+	passed = passed and int(telemetry["six_yard_shot_priority"]) == 2 and priority_event_seen
+	simulation.free()
+	if not passed:
+		push_error("Shot selection test failed: contained six-yard shot priority did not choose a shot.")
+	return passed
+
+func _test_pair_pass_limit() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	var team: FootballTeam = simulation.teams[0]
+	var passer := _player_with_role(team, ["CM", "LCM", "RCM"])
+	var receiver := _player_with_role(team, ["ST", "CF"])
+	var alternative := _player_with_role(team, ["LW", "RW"])
+	if passer == null or receiver == null or alternative == null:
+		simulation.free()
+		return false
+	team.attacks_right = true
+	passer.position = Vector2(500.0, 300.0)
+	receiver.position = Vector2(650.0, 300.0)
+	alternative.position = Vector2(600.0, 320.0)
+	for player in team.players:
+		if player != passer and player != receiver and player != alternative:
+			player.position = Vector2(-500.0, -500.0)
+	for defender in simulation.teams[1].players:
+		defender.position = Vector2(-1000.0, -1000.0)
+	var pair_key := simulation._pair_key(passer.id, receiver.id)
+	simulation.match_telemetry[0]["pass_attempts"] = 3
+	simulation._record_completed_open_play_pass(passer, receiver)
+	simulation._record_completed_open_play_pass(receiver, passer)
+	simulation._record_completed_open_play_pass(passer, receiver)
+	var chosen := simulation._choose_receiver(passer, team)
+	var telemetry: Dictionary = simulation.get_match_telemetry()["teams"][0]
+	var blocked := chosen == alternative and int(simulation.pair_pass_counts[0][pair_key]) == 3 \
+		and int(telemetry["pair_limit_interventions"]) == 1
+	var replica := _new_simulation()
+	var restored_pair_state := replica != null \
+		and replica.restore_snapshot(simulation.create_snapshot()) \
+		and int(replica.pair_pass_counts[0].get(pair_key, 0)) == 3
+	if replica != null:
+		replica.free()
+	var turnover: FootballPlayer = simulation.teams[1].players[0]
+	var opponent_pair_key := simulation._pair_key(
+		simulation.teams[1].players[0].id, simulation.teams[1].players[1].id
+	)
+	simulation.ball_owner = passer
+	simulation.pair_pass_counts[1][opponent_pair_key] = 2
+	simulation._set_possession(turnover)
+	var reset_on_turnover := simulation.pair_pass_counts[0].is_empty() \
+		and simulation.pair_pass_counts[1].is_empty()
+	simulation.pair_pass_counts[0][pair_key] = 3
+	simulation.pair_pass_counts[1][opponent_pair_key] = 2
+	var restarted := simulation._begin_restart(
+		"kickoff", 0,
+		Vector2(float(simulation.config["field"]["width"]) * 0.5, float(simulation.config["field"]["height"]) * 0.5),
+		0.0
+	)
+	var reset_on_restart := restarted and simulation.pair_pass_counts[0].is_empty() \
+		and simulation.pair_pass_counts[1].is_empty()
+	simulation.free()
+	if not blocked or not restored_pair_state or not reset_on_turnover or not reset_on_restart:
+		push_error("Pass selection test failed: unordered three-exchange pair was not blocked or counters did not reset.")
+	return blocked and reset_on_turnover and reset_on_restart
+
+func _test_midfield_forward_preference() -> bool:
+	var simulation := _new_simulation()
+	if simulation == null:
+		return false
+	var team: FootballTeam = simulation.teams[0]
+	var carrier := _player_with_role(team, ["CM", "LCM", "RCM"])
+	var forward := _player_with_role(team, ["ST", "CF"])
+	var nearest_midfielder: FootballPlayer = null
+	for player in team.players:
+		if player != carrier and player != forward and simulation._is_midfield_role(player.tactical_role):
+			nearest_midfielder = player
+			break
+	if carrier == null or forward == null or nearest_midfielder == null:
+		simulation.free()
+		return false
+	for attacks_right in [true, false]:
+		team.attacks_right = attacks_right
+		carrier.position = Vector2(500.0, 300.0)
+		forward.position = Vector2(650.0 if attacks_right else 350.0, 300.0)
+		nearest_midfielder.position = Vector2(510.0, 300.0)
+		for player in team.players:
+			if player != carrier and player != forward and player != nearest_midfielder:
+				player.position = Vector2(-500.0, -500.0)
+		for defender in simulation.teams[1].players:
+			defender.position = Vector2(-1000.0, -1000.0)
+		var chosen := simulation._choose_receiver(carrier, team)
+		if chosen != forward:
+			simulation.free()
+			push_error("Pass selection test failed: midfield carrier selected a midfielder despite a viable forward receiver.")
+			return false
+	simulation.free()
+	return true
+
+func _test_progressive_pass_telemetry() -> bool:
+	var first := _new_simulation()
+	var second := _new_simulation()
+	if first == null or second == null:
+		if first != null:
+			first.free()
+		if second != null:
+			second.free()
+		return false
+	var first_team: FootballTeam = first.teams[0]
+	var second_team: FootballTeam = second.teams[0]
+	var first_passer := _player_with_role(first_team, ["CM", "LCM", "RCM"])
+	var first_receiver := _player_with_role(first_team, ["ST", "CF"])
+	var second_passer := _player_with_role(second_team, ["CM", "LCM", "RCM"])
+	var second_receiver := _player_with_role(second_team, ["ST", "CF"])
+	if first_passer == null or first_receiver == null or second_passer == null or second_receiver == null:
+		first.free()
+		second.free()
+		return false
+	first_team.attacks_right = true
+	first_passer.position = Vector2(400.0, 300.0)
+	first_receiver.position = Vector2(550.0, 300.0)
+	second_team.attacks_right = true
+	second_passer.position = first_passer.position
+	second_receiver.position = first_receiver.position
+	var progressive_result := first._classify_progressive_pass(first_passer, first_receiver)
+	var repeated_result := second._classify_progressive_pass(second_passer, second_receiver)
+	var passed := bool(progressive_result["progressive"]) == bool(repeated_result["progressive"]) \
+		and bool(progressive_result["progressive"])
+	first.match_telemetry[0]["pass_attempts"] = 3
+	first._record_completed_open_play_pass(first_passer, first_receiver)
+	first_receiver.position.x = 500.0
+	var non_progressive_result := first._classify_progressive_pass(first_passer, first_receiver)
+	passed = passed and not bool(non_progressive_result["progressive"])
+	first._record_completed_open_play_pass(first_passer, first_receiver)
+	first_passer.position.x = 300.0
+	first_receiver.position.x = 700.0
+	var outside_origin_result := first._classify_progressive_pass(first_passer, first_receiver)
+	passed = passed and not bool(outside_origin_result["origin_in_attacking_two_thirds"]) \
+		and not bool(outside_origin_result["progressive"])
+	first._record_completed_open_play_pass(first_passer, first_receiver)
+	var telemetry: Dictionary = first.get_match_telemetry()["teams"][0]
+	passed = passed and int(telemetry["pass_completions"]) == 3 \
+		and int(telemetry["progressive_completions"]) == 1 \
+		and int(telemetry["attacking_two_thirds_pass_completions"]) == 2 \
+		and is_equal_approx(float(telemetry["progressive_share"]), 0.5)
+	for defender in first.teams[1].players:
+		defender.position = Vector2(-1000.0, -1000.0)
+	first._set_possession(first_passer)
+	first._resolve_pass(first_passer, first_team)
+	first.ball_pass_probability = 0.0
+	first._complete_flight_pass()
+	telemetry = first.get_match_telemetry()["teams"][0]
+	passed = passed and int(telemetry["pass_attempts"]) == 4 \
+		and int(telemetry["pass_completions"]) == 3 \
+		and int(telemetry["progressive_completions"]) == 1
+	first.free()
+	second.free()
+	if not passed:
+		push_error("Progressive pass test failed: goal-distance threshold, origin band, or deterministic telemetry changed.")
+	return passed
 
 func _test_pass_reception() -> bool:
 	var simulation := _new_simulation()
@@ -216,7 +509,7 @@ func _test_box_run_edge_eligibility() -> bool:
 		simulation.free()
 		return false
 	var field: Dictionary = simulation.config["field"]
-	var edge_margin := float(simulation.config["decision"]["shot_selection"]["box_edge_margin"])
+	var edge_margin := float(simulation.config["decision"]["shot_selection"]["box_edge_margin_px"])
 	var edge_x := float(field["width"]) - float(field["penalty_area_depth"]) - edge_margin
 	shooter.position = Vector2(edge_x - 0.1, float(field["height"]) * 0.5)
 	shooter.box_run_active = true

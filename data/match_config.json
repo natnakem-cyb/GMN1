@@ -279,7 +279,7 @@
     "tick_beacon_interval": 15,
     "state_hash_interval_ticks": 30,
     "snapshot_interval_ticks": 300,
-    "snapshot_version": 6,
+    "snapshot_version": 7,
     "maximum_pending_commands": 128,
     "reconnect_enabled": true,
     "reconnect_timeout_seconds": 30.0,
@@ -291,8 +291,11 @@
     "attacking_role_receiver_bonus": 20.0,
     "possession_pass_range_factor": 0.6,
     "channel_distance_scale": 0.35,
+    "pair_pass_limit": 3,
+    "six_yard_depth_px": 50.0,
+    "six_yard_height_px": 136.31,
     "shot_selection": {
-      "box_edge_margin": 30.0,
+      "box_edge_margin_px": 30.0,
       "inside_box_max_angle_ratio": 0.75,
       "minimum_unmarked_distance": 50.0,
       "direct_outside_min_attack_x": 0.86,
@@ -325,6 +328,9 @@
       "box_runner_near_target_distance": 45.0,
       "box_runner_min_open_distance": 50.0,
       "box_runner_bonus": 180.0,
+      "midfield_forward_search_range_px": 640.0,
+      "midfield_forward_min_open_distance_px": 50.0,
+      "midfield_forward_receiver_bonus": 60.0,
       "minimum_build_up_passes_before_shot": 2
     }
   },
